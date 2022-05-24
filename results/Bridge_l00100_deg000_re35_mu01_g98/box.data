@@ -1,0 +1,24 @@
+#######
+Dt								6.25e-6
+OutputInterval					1.0
+VtkOutputInterval				2.0e-3
+EndTime							2.0e-2
+RadiusRatioA					3.5
+RadiusRatioP					1.75
+RadiusRatioV					3.5
+Density							1000.0		1000.0		1000.0		1000.0
+BulkModulus						1.0e+4		1.0e+4		1.0e+4		1.0e+4
+BulkViscosity					1.0e-1		1.0e-1		1.0e-1		1.0e-1
+ShearViscosity					1.0e-1		1.0e-1		1.0e-1		1.0e-1
+SurfaceTension					0.072		0.072		0.072		0.072
+InteractionRatio(Type0)			1.0			1.0			1.0			1.0
+InteractionRatio(Type1)			1.0			1.0			1.0			1.0
+InteractionRatio(Type2)			1.0			1.0			1.0			1.0
+InteractionRatio(Type3)			1.0			1.0			1.0			1.0
+Gravity                         0.0 -9.8 0.0
+Wall2    Center 0.0 0.0 0.0    Velocity 0.0 0.0 0.0    Omega 0.0 0.0 0.0
+Wall3    Center 0.0 0.0 0.0    Velocity 0.0 0.0 0.0    Omega 0.0 0.0 0.0
+
+
+
+
