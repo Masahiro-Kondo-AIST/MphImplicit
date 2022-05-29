@@ -2320,7 +2320,7 @@ static void multiplyMatrixC( void )
 					jNeigh++;
 				}
 				else{
-					break;
+					// break;
 				}
 			}
 			#pragma acc loop seq
