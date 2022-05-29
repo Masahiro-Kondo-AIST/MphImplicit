@@ -2396,16 +2396,18 @@ static void myDcopy( const int n, const double *x, double *y )
 
 
 static void solveWithConjugatedGradient(void){
-	const int fluidcount = (FluidParticleEnd-FluidParticleBegin);
+	
+	const int fluidcount = FluidParticleEnd-FluidParticleBegin;
 	const int N = DIM*fluidcount;
 	
 	const double *b = VectorB;
 	double *x = (double *)malloc( N*sizeof(double) );
 	double *r = (double *)malloc( N*sizeof(double) );
 	double *z = (double *)malloc( N*sizeof(double) );
+	double *s = (double *)malloc( N*sizeof(double) );
 	double *p = (double *)malloc( N*sizeof(double) );
 	double *q = (double *)malloc( N*sizeof(double) );
-	double rho=0.0;
+	double rho=1.0;
 	double rhop=0.0;
 	double tmp=0.0;
 	double alpha=0.0;
@@ -2414,7 +2416,8 @@ static void solveWithConjugatedGradient(void){
 	double nrm0=0.0;
 	int iter=0;
 	
-	#pragma acc enter data create(x[0:N],r[0:N],z[0:N],p[0:N],q[0:N])
+	
+	#pragma acc enter data create(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
 
 	// intialize
 	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],x[0:N],Force[0:ParticleCount][0:DIM],Mass[0:ParticleCount])
@@ -2436,33 +2439,39 @@ static void solveWithConjugatedGradient(void){
 	nrm=sqrt(nrm);
 	
 	if(nrm!=0.0)for(iter=0;iter<N;++iter){
-		myDcopy( N, r, z );
+		myDcopy( N, r, z ); //‘Oˆ—s—ñ‚Ì‹ts—ñÈ—ª
+		myDcsrmv( N, N, 1.0, CsrCofA, CsrPtrA, CsrIndA, z, 0.0, s);
 		rhop = rho;
-		myDdot( N, r, z, &rho);
+		myDdot( N, s, z, &rho);
 		if(iter==0){
 			myDcopy( N, z, p );
+			myDcsrmv( N, N, 1.0, CsrCofA, CsrPtrA, CsrIndA, p, 0.0, q);
 		}
 		else{
 			beta=rho/rhop;
 			myDaxpy( N, beta, p, z );
 			myDcopy( N, z, p );
+			myDaxpy( N, beta, q, s );
+			myDcopy( N, s, q );
+			
 		}
-		myDcsrmv( N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, p, 0.0, q);
-		myDdot( N, p, q, &tmp );
+		myDdot( N, q, q, &tmp );
 		alpha =rho/tmp;
 		myDaxpy( N, alpha, p, x );
 		myDaxpy( N,-alpha, q, r );
 		myDdot( N, r, r, &nrm );
 		nrm=sqrt(nrm);
+		// log_printf("iter=,%d, nrm=,%e, rho=,%e\n",iter,nrm,rho);
 		
-		if(nrm/nrm0 < 1.0e-7 )break;
-		
+		if(nrm/nrm0 < 1.0e-6 )break;
 	}
+//	log_printf("\n");
+//	
 	
 	log_printf("nrm=%e, nrm0=%e, iter=%d\n",nrm,nrm0,iter);
-//	myDcopy( N, b, z );	
-//	myDcsrmv( N, N, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, z );
-//	myDdot( N, z, z, &nrm );
+//	myDcopy( N, b, r );	
+//	myDcsrmv( N, N, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
+//	myDdot( N, r, r, &nrm );
 //	nrm=sqrt(nrm);
 //	fprintf(stderr,"check nrm=%e\n",nrm);
 	
@@ -2479,13 +2488,13 @@ static void solveWithConjugatedGradient(void){
 		}
 	}
 	
-	
 	free(x);
 	free(r);
 	free(z);
+	free(s);
 	free(p);
 	free(q);
-	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],p[0:N],q[0:N])
+	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
 
 	
 	free(CsrCofA);
