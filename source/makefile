@@ -3,10 +3,12 @@ TARGET = MphImplicit
 #CC = pgc++
 CC = g++
 OBJE = main.o errorfunc.o log.o
-#CFLAGS    =  -acc -O3 -Minfo=accel 
+#CFLAGS  = -O3 -acc -Minfo=accel -ta=tesla,cc70 -Mcuda 
+#CFLAGS  = -O3 -acc -Minfo=accel 
 #CFLAGS  = -O3 -fopenmp 
 CFLAGS  = -O3
 #CFLAGS  = -g -Wall
+#LDFLAGS =  -lm -lcublas -lcusparse
 LDFLAGS =  -lm
 
 

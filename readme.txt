@@ -53,7 +53,7 @@ and they can be visualized with a viewer like ParaView.
 (https://www.paraview.org/)
 
 
------- Using openMP and openACC ------
+------ Using openMP, openACC and CUDA ------
 In compling with openMP or openACC, edit make file to switch the compliers
 and its options. 
 For using openMP apply
@@ -61,7 +61,12 @@ For using openMP apply
  CFLAGS  = -O3 -fopenmp 
 For using openACC apply
  CC = pgc++
- CFLAGS    =  -acc -O3 -Minfo=accel 
+ CFLAGS  =  -O3 -acc -Minfo=accel  
+For more performance using CUDA libraries choose
+ CC = pgc++
+ CFLAGS  =  -O3 -acc -Minfo=accel -ta=tesla,cc70 -Mcuda
+ LDFLAGS =  -lm -lcublas -lcusparse
+ 
 The solver program has only been tested with 
    g++ 7.5.0.   and   NVIDIA HPC-SDK 20.9
 So, they are recomended though compatible versions may work. 

@@ -25,6 +25,12 @@
 #include <assert.h>
 #include <omp.h>
 
+#ifdef _CUDA
+#include <cublas_v2.h>
+#include <cusparse_v2.h>
+#include <cuda_runtime_api.h>
+#endif
+
 #include "errorfunc.h"
 #include "log.h"
 
@@ -2395,9 +2401,133 @@ static void myDcopy( const int n, const double *x, double *y )
 }
 
 
+#ifdef _CUDA
 static void solveWithConjugatedGradient(void){
 	
-	const int fluidcount = FluidParticleEnd-FluidParticleBegin;
+	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
+	const int N = DIM*fluidcount;
+	
+	double *x = (double *)malloc( N*sizeof(double) );
+	double *r = (double *)malloc( N*sizeof(double) );
+	double *z = (double *)malloc( N*sizeof(double) );
+	double *s = (double *)malloc( N*sizeof(double) );
+	double *p = (double *)malloc( N*sizeof(double) );
+	double *q = (double *)malloc( N*sizeof(double) );
+	double rho=0.0;
+	double rhop=0.0;
+	double tmp=0.0;
+	double alpha=0.0;
+	double beta=0.0;
+	double nrm=0.0;
+	double nrm0=0.0;
+	int iter=0;
+	
+	const double one=1.0;
+	const double minus_one=-1.0;
+	const double zero=0.0;	
+	
+	#pragma acc enter data create(x[0:N],r[0:N],z[0:N],s[0,N],p[0:N],q[0:N])
+	
+	// cuda init
+	cublasHandle_t cublas;
+	cublasCreate(&cublas);
+	
+	cusparseHandle_t cusparse;
+	cusparseCreate(&cusparse);
+	
+	cusparseMatDescr_t matDescr;
+	cusparseCreateMatDescr(&matDescr);
+	cusparseSetMatType(matDescr, CUSPARSE_MATRIX_TYPE_GENERAL);
+	cusparseSetMatIndexBase(matDescr, CUSPARSE_INDEX_BASE_ZERO);
+	
+	// intialize
+	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM],Mass[0:ParticleCount],x[0:N])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<fluidcount;++iP){
+		#pragma acc loop seq
+		for(int rD=0;rD<DIM;++rD){
+			const int iRow = DIM*iP+rD;
+			x[iRow]=Velocity[iP][rD]-Force[iP][rD]/Mass[iP]*Dt;
+		}
+	}
+	
+	#pragma acc host_data use_device(VectorB,CsrCofA,CsrPtrA,CsrIndA,x,r,z,s,p,q)
+	{
+		cublasDcopy(cublas,N,VectorB,1,r,1);
+		cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&minus_one,matDescr,CsrCofA,CsrPtrA,CsrIndA,x,&one,r);
+		cublasDdot(cublas,N,VectorB,1,VectorB,1,&nrm0);
+		nrm0=sqrt(nrm0);
+		
+		for(iter=0;iter<N;++iter){
+			cublasDcopy(cublas,N,r,1,z,1);//前処理行列の逆行列省略
+			cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,z,&zero,s);
+			rhop = rho;
+			cublasDdot(cublas,N,s,1,z,1,&rho);
+			if(iter==0){
+				cublasDcopy(cublas,N,z,1,p,1);
+				cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,p,&zero,q);
+				
+			}
+			else{
+				beta=rho/rhop;
+				cublasDaxpy(cublas,N,&beta,p,1,z,1);
+				cublasDcopy(cublas,N,z,1,p,1);
+				cublasDaxpy(cublas,N,&beta,q,1,s,1);
+				cublasDcopy(cublas,N,s,1,q,1);
+			}
+			cublasDdot(cublas,N,q,1,q,1,&tmp);
+			alpha =rho/tmp;
+			cublasDaxpy(cublas,N,&alpha,p,1,x,1);
+			alpha*=-1;
+			cublasDaxpy(cublas,N,&alpha,q,1,r,1);
+			cublasDdot(cublas,N,r,1,r,1,&nrm);
+			nrm=sqrt(nrm);
+			if(nrm/nrm0 < 1.0e-6 )break;
+			
+		}
+		
+	}
+	log_printf("nrm=%e, nrm0=%e, iter=%d\n",nrm,nrm0,iter);
+	//		myDcopy( N, VectorB, z );	
+	//		myDcsrmv( N, NonzeroCount, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, z );
+	//		myDdot( N, z, z, &nrm );
+	//		nrm=sqrt(nrm);
+	//		fprintf(stderr,"check nrm=%e\n",nrm);
+	
+	
+	//copy to Velocity
+	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],x[0:N])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<fluidcount;++iP){
+		#pragma acc loop seq
+		for(int rD=0;rD<DIM;++rD){
+			const int iRow = DIM*iP+rD;
+			Velocity[iP][rD]=x[iRow];
+		}
+	}	
+	
+	free(x);
+	free(r);
+	free(z);
+	free(s);
+	free(p);
+	free(q);
+	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
+	
+	free(CsrCofA);
+	free(CsrIndA);
+	free(CsrPtrA);
+	free(VectorB);
+	#pragma acc exit data delete(CsrCofA,CsrIndA,CsrPtrA,VectorB)
+	
+}
+
+#else //_CUDA is not defined,
+static void solveWithConjugatedGradient(void){
+	
+	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
 	const int N = DIM*fluidcount;
 	
 	const double *b = VectorB;
@@ -2433,12 +2563,13 @@ static void solveWithConjugatedGradient(void){
 		
 	myDcopy( N, b, r );	
 	myDcsrmv( N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-	myDdot( N, b, b, &nrm0 );
-	nrm0=sqrt(nrm0);
 	myDdot( N, r, r, &nrm );
 	nrm=sqrt(nrm);
+	if(nrm==0.0)return;
+	myDdot( N, b, b, &nrm0 );
+	nrm0=sqrt(nrm0);
 	
-	if(nrm!=0.0)for(iter=0;iter<N;++iter){
+	for(iter=0;iter<N;++iter){
 		myDcopy( N, r, z ); //前処理行列の逆行列省略
 		myDcsrmv( N, N, 1.0, CsrCofA, CsrPtrA, CsrIndA, z, 0.0, s);
 		rhop = rho;
@@ -2503,8 +2634,8 @@ static void solveWithConjugatedGradient(void){
 	free(VectorB);
 	#pragma acc exit data delete(CsrCofA,CsrIndA,CsrPtrA,VectorB)
 
-		
 }
+#endif
 
 
 static void calculateVirialPressureAtParticle()
