@@ -44,7 +44,11 @@ in generator directory. (g++ is to be installed)
 
 2."results" contains sample cases for the calculation. 
 In a case directory, execute
+
+```
 > ./generate.sh
+```
+
 The generator will be launched and particles will be generated
 reading cubolid file (*.boid).
 
