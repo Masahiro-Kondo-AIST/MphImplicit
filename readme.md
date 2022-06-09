@@ -1,6 +1,6 @@
 # About
 
-'''
+```
 //================================================================================================//
 //------------------------------------------------------------------------------------------------//
 //    MPH-I : Moving Particle Hydrodynamics for Incompressible Flows (implicit calculation)       //
@@ -18,7 +18,7 @@
 //    Copyright (c) 2022                                                                          //
 //    Masahiro Kondo & National Institute of Advanced Industrial Science and Technology (AIST)    //
 //================================================================================================//
-'''
+```
 
 This repository contains programs for conducting particle based fluid simulation
 using MPH-I (Moving Particle Hydrodynamics for Incompressible) method. 
@@ -27,19 +27,19 @@ using MPH-I (Moving Particle Hydrodynamics for Incompressible) method.
 # Directories
 The directories in the repository is as follows:  
 
-'''
+```
 MphImplicit ---- generator
             |--- results
             |--- source
 
-'''        
+```        
 
 # How to execute samples
 
 1."generator" is for pre-process. To compile it, run
-'''
+```
 > make 
-'''
+```
 in generator directory. (g++ is to be installed)
 
 2."results" contains sample cases for the calculation. 
@@ -51,16 +51,16 @@ reading cubolid file (*.boid).
 3."source" contains the main solver for MPH-WC calculations. 
 To complie it, run
 
-'''
+```
 > make 
-'''
+```
 in the source directory. 
 
 4.Then, back to the case directory, and launch
 
-'''
+```
 > ./execute.sh
-'''
+```
 
 The solver starts with reading parameter file (*.data) 
 and particle file (*.grid). 
@@ -74,25 +74,25 @@ In compling with openMP or openACC, edit make file to switch the compliers
 and its options. 
 For using openMP apply
 
-'''
+```
  CC = g++
  CFLAGS  = -O3 -fopenmp 
-'''
+```
 
 For using openACC apply
 
-'''
+```
  CC = pgc++
  CFLAGS  =  -O3 -acc -Minfo=accel  
-'''
+```
 
 For more performance using CUDA libraries choose
 
-'''
+```
  CC = pgc++
  CFLAGS  =  -O3 -acc -Minfo=accel -ta=tesla,cc70 -Mcuda
  LDFLAGS =  -lm -lcublas -lcusparse
-'''
+```
  
 The solver program has only been tested with 
    g++ 7.5.0.   and   NVIDIA HPC-SDK 20.9
