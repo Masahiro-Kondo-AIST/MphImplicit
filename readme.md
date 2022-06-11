@@ -52,7 +52,7 @@ In a case directory, execute
 The generator will be launched and particles will be generated
 reading cubolid file (*.boid).
 
-3."source" contains the main solver for MPH-WC calculations. 
+3."source" contains the main solver for MPH-I calculations. 
 To complie it, run
 
 ```
