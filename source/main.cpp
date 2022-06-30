@@ -1125,15 +1125,8 @@ static void calculateCellParticle()
 	}
 	
 	int threshold[4]={0,0,0,0};
-	
-	#pragma acc kernels create(threshold[0:4])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iDummy=0;iDummy<4;++iDummy){
-		threshold[iDummy]=0;
-	}
-	
-	#pragma acc kernels copyout(threshold[0:4]) present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+	#pragma acc kernels copy(threshold[0:4]) \
+	present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=1; iP<ParticleCount+1; ++iP){
@@ -1166,12 +1159,10 @@ static void calculateCellParticle()
 			}
 		}
 	}
-	
-	FluidParticleBegin = threshold[0];
-	FluidParticleEnd   = threshold[1];
-	WallParticleBegin  = threshold[2];
-	WallParticleEnd    = threshold[3];
-	
+	FluidParticleBegin=threshold[0];
+	FluidParticleEnd=threshold[1];
+	WallParticleBegin=threshold[2];
+	WallParticleEnd=threshold[3];
 	
 	// re-arange particles in CellIndex order
 	#pragma acc kernels present(ParticleIndex[0:ParticleCount])
