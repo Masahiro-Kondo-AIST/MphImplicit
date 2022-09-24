@@ -31,6 +31,25 @@
 #include <cuda_runtime_api.h>
 #endif
 
+
+#define CHECK_CUDA(func)                                                       \
+{                                                                              \
+    cudaError_t status = (func);                                               \
+    if (status != cudaSuccess) {                                               \
+        fprintf(stderr,"CUDA API failed at line %d with error: %s (%d)\n",      \
+               __LINE__, cudaGetErrorString(status), status);                  \
+    }                                                                          \
+}
+
+#define CHECK_CUSPARSE(func)                                                   \
+{                                                                              \
+    cusparseStatus_t status = (func);                                          \
+    if (status != CUSPARSE_STATUS_SUCCESS) {                                   \
+        fprintf(stderr,"CUSPARSE API failed at line %d with error: %s (%d)\n",  \
+               __LINE__, cusparseGetErrorString(status), status); 				\
+    }                                                                          \
+}
+
 #include "errorfunc.h"
 #include "log.h"
 
@@ -331,6 +350,18 @@ int main(int argc, char *argv[])
 		}
 		#endif
     }
+	
+	#pragma acc enter data create(ParticleCount,ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
+	#pragma acc enter data create(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
+	#pragma acc enter data create(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
+	#pragma acc enter data create(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
+	#pragma acc enter data create(FluidParticleBegin,FluidParticleEnd)
+	#pragma acc enter data create(WallParticleBegin,WallParticleEnd)
+	#pragma acc enter data create(Gravity[0:DIM])
+	#pragma acc enter data create(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
+	#pragma acc enter data create(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
+	
+	
     readDataFile(datafilename);
     readGridFile(gridfilename);
     {
@@ -342,26 +373,17 @@ int main(int argc, char *argv[])
     initializeWall();
     initializeDomain();
 	
-	#pragma acc enter data create(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
-	#pragma acc enter data create(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
-	#pragma acc enter data create(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
-	#pragma acc enter data create(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
-	#pragma acc enter data create(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
-	#pragma acc enter data create(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
-	#pragma acc enter data create(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
-	#pragma acc enter data create(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
-	#pragma acc enter data create(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
-	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
-	#pragma acc enter data create(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
-	#pragma acc enter data create(FluidParticleBegin,FluidParticleEnd)
-	#pragma acc enter data create(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
-	#pragma acc enter data create(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
-	#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
-	#pragma acc enter data create(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
-	#pragma acc enter data create(Gravity[0:DIM])
-	#pragma acc enter data create(WallParticleBegin,WallParticleEnd)
-	#pragma acc enter data create(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
-	#pragma acc enter data create(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
+//	#pragma acc enter data create(ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
+//	#pragma acc enter data create(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
+//	#pragma acc enter data create(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
+//	#pragma acc enter data create(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
+//	#pragma acc enter data create(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
+//	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+//	#pragma acc enter data create(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
+//	#pragma acc enter data create(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
+//	#pragma acc enter data create(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
+//	#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
+//	#pragma acc enter data create(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
 	
 	#pragma acc update device(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
 	#pragma acc update device(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
@@ -551,6 +573,12 @@ static void readDataFile(char *filename)
         }
     }
     fclose(fp);
+	
+	#pragma acc update device(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT])
+	#pragma acc update device(SurfaceTension[0:TYPE_COUNT],InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
+	#pragma acc update device(Gravity[0:DIM])
+	#pragma acc update device(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM])
+	
     return;
 }
 
@@ -574,6 +602,7 @@ static void readGridFile(char *filename)
 #else
 	ParticleVolume = ParticleSpacing*ParticleSpacing*ParticleSpacing;
 #endif
+    	
 		ParticleIndex = (int *)malloc(ParticleCount*sizeof(int));
         Property = (int *)malloc(ParticleCount*sizeof(int));
         Position = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
@@ -584,7 +613,7 @@ static void readGridFile(char *filename)
         VolStrainP = (double *)malloc(ParticleCount*sizeof(double));
     	DivergenceP = (double *)malloc(ParticleCount*sizeof(double));
         PressureP = (double *)malloc(ParticleCount*sizeof(double));
-        VirialPressureAtParticle = (double *)malloc(ParticleCount*sizeof(double));
+    	VirialPressureAtParticle = (double *)malloc(ParticleCount*sizeof(double));
         VirialPressureInsideRadius = (double *)malloc(ParticleCount*sizeof(double));
     	VirialStressAtParticle = (double (*) [DIM][DIM])malloc(ParticleCount*sizeof(double [DIM][DIM]));
     	Mass = (double (*))malloc(ParticleCount*sizeof(double));
@@ -602,6 +631,35 @@ static void readGridFile(char *filename)
     	Neighbor       = (int (*)[MAX_NEIGHBOR_COUNT])malloc(ParticleCount*sizeof(int [MAX_NEIGHBOR_COUNT]));
     	NeighborCountP = (int *)malloc(ParticleCount*sizeof(int));
     	NeighborP      = (int (*)[MAX_NEIGHBOR_COUNT])malloc(ParticleCount*sizeof(int [MAX_NEIGHBOR_COUNT]));
+    	
+    	#pragma acc enter data create(ParticleIndex[0:ParticleCount]) attach(ParticleIndex)
+    	#pragma acc enter data create(Property[0:ParticleCount]) attach(Property)
+    	#pragma acc enter data create(Position[0:ParticleCount][0:DIM]) attach(Position)
+    	#pragma acc enter data create(Velocity[0:ParticleCount][0:DIM]) attach(Velocity)
+    	#pragma acc enter data create(DensityA[0:ParticleCount]) attach(DensityA)
+    	#pragma acc enter data create(GravityCenter[0:ParticleCount][0:DIM]) attach(GravityCenter)
+    	#pragma acc enter data create(PressureA[0:ParticleCount]) attach(PressureA)
+    	#pragma acc enter data create(VolStrainP[0:ParticleCount]) attach(VolStrainP)
+    	#pragma acc enter data create(DivergenceP[0:ParticleCount]) attach(DivergenceP)
+   		#pragma acc enter data create(PressureP[0:ParticleCount]) attach(PressureP)
+    	#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount]) attach(VirialPressureAtParticle)
+    	#pragma acc enter data create(VirialPressureInsideRadius[0:ParticleCount]) attach(VirialPressureInsideRadius)
+    	#pragma acc enter data create(VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM]) attach(VirialStressAtParticle)
+    	#pragma acc enter data create(Mass[0:ParticleCount]) attach(Mass)
+    	#pragma acc enter data create(Force[0:ParticleCount][0:DIM]) attach(Force)
+    	#pragma acc enter data create(Mu[0:ParticleCount]) attach(Mu)
+    	#pragma acc enter data create(Lambda[0:ParticleCount]) attach(Lambda)
+    	#pragma acc enter data create(Kappa[0:ParticleCount]) attach(Kappa)
+    	
+    	#pragma acc enter data create(TmpIntScalar[0:ParticleCount]) attach(TmpIntScalar)
+    	#pragma acc enter data create(TmpDoubleScalar[0:ParticleCount]) attach(TmpDoubleScalar)
+    	#pragma acc enter data create(TmpDoubleVector[0:ParticleCount][0:DIM]) attach(TmpDoubleVector)
+    	
+    	#pragma acc enter data create(NeighborFluidCount[0:ParticleCount]) attach(NeighborFluidCount)
+    	#pragma acc enter data create(NeighborCount[0:ParticleCount]) attach(NeighborCount)
+    	#pragma acc enter data create(Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT]) attach(Neighbor)
+    	#pragma acc enter data create(NeighborCountP[0:ParticleCount]) attach(NeighborCountP)
+    	#pragma acc enter data create(NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT]) attach(NeighborP)
 
         double (*q)[DIM] = Position;
         double (*v)[DIM] = Velocity;
@@ -632,6 +690,10 @@ static void readGridFile(char *filename)
     		WallParticleEnd=iP+1;
     	}
     }
+	
+	#pragma acc update device(ParticleCount,ParticleSpacing,DomainMin[0:DIM],DomainMax[0:DIM],ParticleVolume)
+	#pragma acc update device(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM])
+	#pragma acc update device(FluidParticleBegin,FluidParticleEnd,WallParticleBegin,WallParticleEnd)
 	
     return;
 }
@@ -940,7 +1002,12 @@ static void initializeWeight()
 #endif
         N0p = sum;
         log_printf("N0p = %e, count=%d\n", N0p, count);
-    }				
+    }
+	
+	#pragma acc update device(RadiusA,RadiusG,RadiusP,RadiusV)
+	#pragma acc update device(Swa,Swg,Swp,Swv,R2g)
+	#pragma acc update device(N0a,N0p)
+
 }
 
 
@@ -971,6 +1038,12 @@ static void initializeFluid()
 	for(int iT=0;iT<TYPE_COUNT;++iT){
 		CofA[iT]=SurfaceTension[iT] / ((RadiusG/ParticleSpacing)*(integN+CofK*CofK*integX));
 	}
+	
+	#pragma acc update device(Mass[0:ParticleCount])
+	#pragma acc update device(Kappa[0:ParticleCount])
+	#pragma acc update device(Lambda[0:ParticleCount])
+	#pragma acc update device(Mu[0:ParticleCount])
+	#pragma acc update device(CofK,CofA[0:TYPE_COUNT])
 }
 
 static void initializeWall()
@@ -1010,43 +1083,50 @@ static void initializeWall()
 		R[2][2] = -q[0]*q[0]-q[1]*q[1]+q[2]*q[2]+q[3]*q[3];
 	}
 	
+	#pragma acc update device(WallRotation[0:WALL_END][0:DIM][0:DIM])
+	
 }
 
 static void initializeDomain( void )
 {
-    CellWidth = ParticleSpacing;
-    
-    double cellCount[DIM];
-
-    cellCount[0] = round((DomainMax[0] - DomainMin[0])/CellWidth);
-    cellCount[1] = round((DomainMax[1] - DomainMin[1])/CellWidth);
-#ifdef TWO_DIMENSIONAL
-    cellCount[2] = 1;
-#else
-    cellCount[2] = round((DomainMax[2] - DomainMin[2])/CellWidth);
-#endif
-
-    CellCount[0] = (int)cellCount[0];
-    CellCount[1] = (int)cellCount[1];
-    CellCount[2] = (int)cellCount[2];
+	CellWidth = ParticleSpacing;
+	
+	double cellCount[DIM];
+	
+	cellCount[0] = round((DomainMax[0] - DomainMin[0])/CellWidth);
+	cellCount[1] = round((DomainMax[1] - DomainMin[1])/CellWidth);
+	#ifdef TWO_DIMENSIONAL
+	cellCount[2] = 1;
+	#else
+	cellCount[2] = round((DomainMax[2] - DomainMin[2])/CellWidth);
+	#endif
+	
+	CellCount[0] = (int)cellCount[0];
+	CellCount[1] = (int)cellCount[1];
+	CellCount[2] = (int)cellCount[2];
 	TotalCellCount = CellCount[0]*CellCount[1]*CellCount[2];
 	fprintf(stderr, "TotalCellCount = %d\n", TotalCellCount);
-
-    if(cellCount[0]!=(double)CellCount[0] || cellCount[1]!=(double)CellCount[1] ||cellCount[2]!=(double)CellCount[2]){
-        fprintf(stderr,"DomainWidth/CellWidth is not integer\n");
-        DomainMax[0] = DomainMin[0] + CellWidth*(double)CellCount[0];
-        DomainMax[1] = DomainMin[1] + CellWidth*(double)CellCount[1];
-        DomainMax[2] = DomainMin[2] + CellWidth*(double)CellCount[2];
-        fprintf(stderr,"Changing the Domain Max to (%e,%e,%e)\n", DomainMax[0], DomainMax[1], DomainMax[2]);
-    }
-    DomainWidth[0] = DomainMax[0] - DomainMin[0];
-    DomainWidth[1] = DomainMax[1] - DomainMin[1];
-    DomainWidth[2] = DomainMax[2] - DomainMin[2];
-
+	
+	if(cellCount[0]!=(double)CellCount[0] || cellCount[1]!=(double)CellCount[1] ||cellCount[2]!=(double)CellCount[2]){
+		fprintf(stderr,"DomainWidth/CellWidth is not integer\n");
+		DomainMax[0] = DomainMin[0] + CellWidth*(double)CellCount[0];
+		DomainMax[1] = DomainMin[1] + CellWidth*(double)CellCount[1];
+		DomainMax[2] = DomainMin[2] + CellWidth*(double)CellCount[2];
+		fprintf(stderr,"Changing the Domain Max to (%e,%e,%e)\n", DomainMax[0], DomainMax[1], DomainMax[2]);
+	}
+	DomainWidth[0] = DomainMax[0] - DomainMin[0];
+	DomainWidth[1] = DomainMax[1] - DomainMin[1];
+	DomainWidth[2] = DomainMax[2] - DomainMin[2];	
+	
 	CellFluidParticleBegin = (int *)malloc( TotalCellCount * sizeof(int) );
 	CellFluidParticleEnd   = (int *)malloc( TotalCellCount * sizeof(int) );
 	CellWallParticleBegin  = (int *)malloc( TotalCellCount * sizeof(int) );
 	CellWallParticleEnd    = (int *)malloc( TotalCellCount * sizeof(int) );
+	
+	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount]) attach(CellFluidParticleBegin)
+	#pragma acc enter data create(CellFluidParticleEnd[0:TotalCellCount]) attach(CellFluidParticleEnd)
+	#pragma acc enter data create(CellWallParticleBegin[0:TotalCellCount]) attach(CellWallParticleBegin)
+	#pragma acc enter data create(CellWallParticleEnd[0:TotalCellCount]) attach(CellWallParticleEnd)
 	
 	// calculate minimun PowerParticleCount which sataisfies  ParticleCount < PowerParticleCount = pow(2,ParticleCountPower) 
 	ParticleCountPower=0;
@@ -1054,14 +1134,22 @@ static void initializeDomain( void )
 		++ParticleCountPower;
 	}
 	PowerParticleCount = (1<<ParticleCountPower);
+	
 	fprintf(stderr,"memory for CellIndex and CellParticle %d\n", PowerParticleCount );
 	CellIndex    = (int *)malloc( (PowerParticleCount) * sizeof(int) );
     CellParticle = (int *)malloc( (PowerParticleCount) * sizeof(int) );
+	#pragma acc enter data create(CellIndex[0:PowerParticleCount]) attach(CellIndex)
+	#pragma acc enter data create(CellParticle[0:PowerParticleCount]) attach(CellParticle)
 	
 	MaxRadius = ((RadiusA>MaxRadius) ? RadiusA : MaxRadius);
 	MaxRadius = ((2.0*RadiusP>MaxRadius) ? 2.0*RadiusP : MaxRadius);
 	MaxRadius = ((RadiusV>MaxRadius) ? RadiusV : MaxRadius);
 	fprintf(stderr, "MaxRadius = %lf\n", MaxRadius);
+	
+	#pragma acc update device(CellCount[0:DIM],TotalCellCount)
+	#pragma acc update device(DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
+	#pragma acc update device(ParticleCountPower,PowerParticleCount)
+	#pragma acc update device(MaxRadius)
 }
 
 static void calculateCellParticle()
@@ -1879,7 +1967,7 @@ static void calculateMatrixA( void )
 	const int powerN = (1<<power);
 	
 	CsrPtrA = (int *)malloc( powerN * sizeof(int));
-	#pragma acc enter data create(CsrPtrA[0:powerN])
+	#pragma acc enter data create(CsrPtrA[0:powerN]) attach(CsrPtrA)
 	
     #pragma acc kernels
 	#pragma acc loop independent
@@ -1931,9 +2019,9 @@ static void calculateMatrixA( void )
 	CsrCofA = (double *)malloc( NonzeroCountA * sizeof(double) );
 	CsrIndA = (int *)malloc( NonzeroCountA * sizeof(int) );
 	VectorB = (double *)malloc( N * sizeof(double) );
-	#pragma acc enter data create(CsrCofA[0:NonzeroCountA])
-	#pragma acc enter data create(CsrIndA[0:NonzeroCountA])
-	#pragma acc enter data create(VectorB[0:N])
+	#pragma acc enter data create(CsrCofA[0:NonzeroCountA]) attach(CsrCofA)
+	#pragma acc enter data create(CsrIndA[0:NonzeroCountA]) attach(CsrIndA)
+	#pragma acc enter data create(VectorB[0:N]) attach(VectorB)
 	
     #pragma acc kernels present(CsrPtrA[0:N],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA])
 	#pragma acc loop independent
@@ -2076,7 +2164,7 @@ static void calculateMatrixC( void )
 	const int powerN = (1<<power);
 	
 	CsrPtrC = (int *)malloc( powerN * sizeof(int));
-	#pragma acc enter data create(CsrPtrC[0:powerN])
+	#pragma acc enter data create(CsrPtrC[0:powerN]) attach(CsrPtrC)
 	
 	#pragma acc kernels
 	#pragma acc loop independent
@@ -2128,9 +2216,9 @@ static void calculateMatrixC( void )
 	CsrCofC = (double *)malloc( NonzeroCountC * sizeof(double) );
 	CsrIndC = (int *)malloc( NonzeroCountC * sizeof(int) );
 	VectorP = (double *)malloc( ParticleCount * sizeof(double) );
-	#pragma acc enter data create(CsrCofC[0:NonzeroCountC])
-	#pragma acc enter data create(CsrIndC[0:NonzeroCountC])
-	#pragma acc enter data create(VectorP[0:ParticleCount])
+	#pragma acc enter data create(CsrCofC[0:NonzeroCountC]) attach(CsrCofC)
+	#pragma acc enter data create(CsrIndC[0:NonzeroCountC]) attach(CsrIndC)
+	#pragma acc enter data create(VectorP[0:ParticleCount]) attach(VectorP)
 	
 	#pragma acc kernels present(CsrPtrC[0:powerN],CsrIndC[0:NonzeroCountC],CsrCofC[0:NonzeroCountC],)
 	#pragma acc loop independent
@@ -2334,65 +2422,46 @@ static void multiplyMatrixC( void )
 		}
 	}
 	
-	free(CsrCofC);
-	free(CsrIndC);
 	free(CsrPtrC);
+	free(CsrIndC);
+	free(CsrCofC);
 	free(VectorP);
-	#pragma acc exit data delete(CsrPtrC,CsrIndC,CsrCofC,VectorP)
+	#pragma acc exit data delete(CsrPtrC) detach(CsrPtrC)
+	#pragma acc exit data delete(CsrIndC) detach(CsrIndC)
+	#pragma acc exit data delete(CsrCofC) detach(CsrCofC)
+	#pragma acc exit data delete(VectorP) detach(VectorP)
 
 }
 
-static void myDcsrmv( const int m, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
-{
-	#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:m],y[0:m])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iRow=0;iRow<m; ++iRow){
-		double sum = 0.0;
-		#pragma acc loop reduction(+:sum) vector
-		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
-			const int iColumn=csrColInd[iNonZero];
-			sum += alpha*csrVal[iNonZero]*x[iColumn];
-		}
-		y[iRow] *= beta;
-		y[iRow] += sum;
-	}
-}
 
-static void myDdot( const int n, const double *x, const double *y, double *res )
-{
-	double sum=0.0;
-	#pragma acc kernels copy(sum) present(x[0:n],y[0:n])
-	#pragma acc loop reduction(+:sum)
-	#pragma omp parallel for reduction(+:sum)
-	for(int iRow=0;iRow<n;++iRow){
-		sum += x[iRow]*y[iRow];
-	}
-	(*res)=sum;
-}
-
-static void myDaxpy( const int n, const double alpha, const double *x, double *y )
-{
-	#pragma acc kernels present(x[0:n],y[0:n])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iRow=0;iRow<n;++iRow){
-		y[iRow] += alpha*x[iRow];
-	}
-}
-
-static void myDcopy( const int n, const double *x, double *y )
-{
-	#pragma acc kernels present(x[0:n],y[0:n])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iRow=0;iRow<n;++iRow){
-		y[iRow] = x[iRow];
-	}
-}
 
 
 #ifdef _CUDA
+
+static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n, const int nnz, const double alpha, double *csrVal, int *csrRowPtr, int *csrColInd, double *x, const double beta, double *y )
+{
+	
+	cusparseSpMatDescr_t mat;
+	cusparseCreateCsr( &mat, m, n, nnz, csrRowPtr, csrColInd, csrVal, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
+	cusparseDnVecDescr_t vecX;
+	cusparseCreateDnVec( &vecX, n, x, CUDA_R_64F );
+	cusparseDnVecDescr_t vecY;
+	cusparseCreateDnVec( &vecY, m, y, CUDA_R_64F );
+	
+	size_t bufferSize=0;
+	void * buffer;
+	cusparseSpMV_bufferSize( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, &bufferSize);
+	cudaMalloc( &buffer, bufferSize );
+	cusparseSpMV( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, buffer );
+	cudaFree( buffer );
+	
+	cusparseDestroySpMat(mat);
+	cusparseDestroyDnVec(vecX);
+	cusparseDestroyDnVec(vecY);
+	
+}
+	
+
 static void solveWithConjugatedGradient(void){
 	
 	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
@@ -2413,9 +2482,9 @@ static void solveWithConjugatedGradient(void){
 	double nrm0=0.0;
 	int iter=0;
 	
-	const double one=1.0;
-	const double minus_one=-1.0;
-	const double zero=0.0;	
+//	const double one=1.0;
+//	const double minus_one=-1.0;
+//	const double zero=0.0;	
 	
 	#pragma acc enter data create(x[0:N],r[0:N],z[0:N],s[0,N],p[0:N],q[0:N])
 	
@@ -2426,10 +2495,10 @@ static void solveWithConjugatedGradient(void){
 	cusparseHandle_t cusparse;
 	cusparseCreate(&cusparse);
 	
-	cusparseMatDescr_t matDescr;
-	cusparseCreateMatDescr(&matDescr);
-	cusparseSetMatType(matDescr, CUSPARSE_MATRIX_TYPE_GENERAL);
-	cusparseSetMatIndexBase(matDescr, CUSPARSE_INDEX_BASE_ZERO);
+//	cusparseMatDescr_t matDescr;
+//	cusparseCreateMatDescr(&matDescr);
+//	cusparseSetMatType(matDescr, CUSPARSE_MATRIX_TYPE_GENERAL);
+//	cusparseSetMatIndexBase(matDescr, CUSPARSE_INDEX_BASE_ZERO);
 	
 	// intialize
 	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM],Mass[0:ParticleCount],x[0:N])
@@ -2446,19 +2515,21 @@ static void solveWithConjugatedGradient(void){
 	#pragma acc host_data use_device(VectorB,CsrCofA,CsrPtrA,CsrIndA,x,r,z,s,p,q)
 	{
 		cublasDcopy(cublas,N,VectorB,1,r,1);
-		cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&minus_one,matDescr,CsrCofA,CsrPtrA,CsrIndA,x,&one,r);
+		//cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&minus_one,matDescr,CsrCofA,CsrPtrA,CsrIndA,x,&one,r);
+		mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
 		cublasDdot(cublas,N,VectorB,1,VectorB,1,&nrm0);
 		nrm0=sqrt(nrm0);
 		
 		for(iter=0;iter<N;++iter){
 			cublasDcopy(cublas,N,r,1,z,1);//前処理行列の逆行列省略
-			cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,z,&zero,s);
+			//cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,z,&zero,s);
+			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,z,0.0,s);
 			rhop = rho;
 			cublasDdot(cublas,N,s,1,z,1,&rho);
 			if(iter==0){
 				cublasDcopy(cublas,N,z,1,p,1);
-				cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,p,&zero,q);
-				
+				//cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,p,&zero,q);
+				mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,p,0.0,q);
 			}
 			else{
 				beta=rho/rhop;
@@ -2507,15 +2578,67 @@ static void solveWithConjugatedGradient(void){
 	free(q);
 	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
 	
-	free(CsrCofA);
-	free(CsrIndA);
 	free(CsrPtrA);
+	free(CsrIndA);
+	free(CsrCofA);
 	free(VectorB);
-	#pragma acc exit data delete(CsrCofA,CsrIndA,CsrPtrA,VectorB)
+	#pragma acc exit data delete(CsrPtrA) detach(CsrPtrA)
+	#pragma acc exit data delete(CsrIndA) detach(CsrIndA)
+	#pragma acc exit data delete(CsrCofA) detach(CsrCofA)
+	#pragma acc exit data delete(VectorB) detach(VectorB)
 	
 }
 
 #else //_CUDA is not defined,
+static void myDcsrmv( const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
+{
+	#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<m; ++iRow){
+		double sum = 0.0;
+		#pragma acc loop seq
+		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
+			const int iColumn=csrColInd[iNonZero];
+			sum += alpha*csrVal[iNonZero]*x[iColumn];
+		}
+		y[iRow] *= beta;
+		y[iRow] += sum;
+	}
+}
+
+static void myDdot( const int n, const double *x, const double *y, double *res )
+{
+	double sum=0.0;
+	#pragma acc kernels copy(sum) present(x[0:n],y[0:n])
+	#pragma acc loop reduction(+:sum)
+	#pragma omp parallel for reduction(+:sum)
+	for(int iRow=0;iRow<n;++iRow){
+		sum += x[iRow]*y[iRow];
+	}
+	(*res)=sum;
+}
+
+static void myDaxpy( const int n, const double alpha, const double *x, double *y )
+{
+	#pragma acc kernels present(x[0:n],y[0:n])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		y[iRow] += alpha*x[iRow];
+	}
+}
+
+static void myDcopy( const int n, const double *x, double *y )
+{
+	#pragma acc kernels present(x[0:n],y[0:n])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		y[iRow] = x[iRow];
+	}
+}
+
 static void solveWithConjugatedGradient(void){
 	
 	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
@@ -2553,7 +2676,7 @@ static void solveWithConjugatedGradient(void){
 	}
 		
 	myDcopy( N, b, r );	
-	myDcsrmv( N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
+	myDcsrmv( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
 	myDdot( N, r, r, &nrm );
 	nrm=sqrt(nrm);
 	if(nrm==0.0)return;
@@ -2562,12 +2685,12 @@ static void solveWithConjugatedGradient(void){
 	
 	for(iter=0;iter<N;++iter){
 		myDcopy( N, r, z ); //前処理行列の逆行列省略
-		myDcsrmv( N, N, 1.0, CsrCofA, CsrPtrA, CsrIndA, z, 0.0, s);
+		myDcsrmv( N, N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, z, 0.0, s);
 		rhop = rho;
 		myDdot( N, s, z, &rho);
 		if(iter==0){
 			myDcopy( N, z, p );
-			myDcsrmv( N, N, 1.0, CsrCofA, CsrPtrA, CsrIndA, p, 0.0, q);
+			myDcsrmv( N, N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, p, 0.0, q);
 		}
 		else{
 			beta=rho/rhop;
@@ -2592,7 +2715,7 @@ static void solveWithConjugatedGradient(void){
 	
 	log_printf("nrm=%e, nrm0=%e, iter=%d\n",nrm,nrm0,iter);
 //	myDcopy( N, b, r );	
-//	myDcsrmv( N, N, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
+//	myDcsrmv( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
 //	myDdot( N, r, r, &nrm );
 //	nrm=sqrt(nrm);
 //	fprintf(stderr,"check nrm=%e\n",nrm);
@@ -2619,11 +2742,14 @@ static void solveWithConjugatedGradient(void){
 	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
 
 	
-	free(CsrCofA);
-	free(CsrIndA);
 	free(CsrPtrA);
+	free(CsrIndA);
+	free(CsrCofA);
 	free(VectorB);
-	#pragma acc exit data delete(CsrCofA,CsrIndA,CsrPtrA,VectorB)
+	#pragma acc exit data delete(CsrPtrA) detach(CsrPtrA)
+	#pragma acc exit data delete(CsrIndA) detach(CsrIndA)
+	#pragma acc exit data delete(CsrCofA) detach(CsrCofA)
+	#pragma acc exit data delete(VectorB) detach(VectorB)
 
 }
 #endif

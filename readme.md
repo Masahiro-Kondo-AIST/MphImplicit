@@ -99,7 +99,7 @@ For more performance using CUDA libraries choose
 ```
  
 The solver program has only been tested with 
-   g++ 7.5.0.   and   NVIDIA HPC-SDK 20.9 with CUDA version 10.2.
+   g++ 7.5.0.   and   NVIDIA HPC-SDK 21.5 with CUDA version 11.3.
 So, they are recomended though compatible versions may work. 
 
 
