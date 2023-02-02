@@ -30,6 +30,7 @@ The directories in the repository is as follows:
 ```
 MphImplicit ---- generator
             |--- results
+            |--- results3d
             |--- source
 
 ```        
@@ -53,18 +54,20 @@ The generator will be launched and particles will be generated
 reading cubolid file (*.boid).
 
 3."source" contains the main solver for MPH-I calculations. 
-To complie it, run
+To complie it , run
 
 ```
 > make 
 ```
-in the source directory. 
+in the source directory. Then, an executable "MphImplicit", 
+which is for 2D single thread calculation, is created with g++. 
 
 4.Then, back to the case directory, and launch
 
 ```
 > ./execute.sh
 ```
+Make sure that the execute.sh points the correct executable. 
 
 The solver starts with reading parameter file (*.data) 
 and particle file (*.grid). 
@@ -74,24 +77,52 @@ and they can be visualized with a viewer like ParaView.
 
 
 # Using openMP, openACC and CUDA
-In compling with openMP or openACC, edit make file to switch the compliers
-and its options. 
-For using openMP apply
+You may switch the compilation by the targets of "make".
+For 3D single thread calculation with g+;
+```
+> make MphImplicit_3d
+``` 
+For 2D OpenMP calculation with g++;
+```
+> make Mph_gcc
+``` 
+For 3D OpenMP calculation with g++; 
+```
+> make Mph_gcc3d
+``` 
+For 2D OpenACC calculation with NVIDIA HPC-SDK;
+```
+> make Mph_acc
+``` 
+For 3D OpenACC calculation with NVIDIA HPC-SDK;
+```
+> make Mph_acc3d
+``` 
+For 2D OpenACC calculation using CUDA libraries (cublas & cusparse) with NVIDIA HPC-SDK; 
+```
+> make Mph_cuda
+``` 
+For 3D OpenACC calculation using CUDA libraries (cublas & cusparse) with NVIDIA HPC-SDK;
+```
+> make Mph_cuda3d
+``` 
+See "makefile" in detail. 
 
+Instead of switching the target executable as above, 
+You may switch the compiler and its options directly. 
+
+For using openMP apply
 ```
  CC = g++
  CFLAGS  = -O3 -fopenmp 
 ```
-
 For using openACC apply
-
 ```
  CC = pgc++
  CFLAGS  =  -O3 -acc -Minfo=accel  
 ```
 
-For more performance using CUDA libraries choose
-
+For using CUDA libraries (cublas & cusparse) apply
 ```
  CC = pgc++
  CFLAGS  =  -O3 -acc -Minfo=accel -ta=tesla,cc70 -Mcuda
@@ -114,10 +145,8 @@ In the main solver, the particle types are defined as
 - 1: fluid
 - 2: wall
 - 3: wall
-
 Therefore, 2 fluid types and 2 wall types can be used in the solver. 
 To change tne number of types, the main solver is to be modified. 
-
 
 # Changing physical properties 
 The physical properties and calculation conditions are given in 
@@ -128,11 +157,14 @@ properties can be changed.
 # For 3D calculation 
 Particle distribution in 3D can be generated only by editing the 
 cuboid file (*.boid) No modification in the generator program is needed. 
-For the main solver, the macro TWO_DIMENSIONAL in main.cpp is to be
-commented out and the program has to be re-compiled. 
-After re-compiling, the solver can be executed in the same way as the 2D samples.  
+In compiling the main solver, 3D executable is generated 
+when the macro TWO_DIMENSIONAL is NOT defined, 
+which can be controled by the compile option.   
+  
 
-
-
+# For Truning off Multigrid solver
+When you do not want to apply the multigrid preconditioner, 
+just comment out the macro MULTIGRID_SOLVER in the main solver. 
+Then, the simple CR solver is applied in the calculation.  
 
 

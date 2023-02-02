@@ -31,25 +31,6 @@
 #include <cuda_runtime_api.h>
 #endif
 
-
-#define CHECK_CUDA(func)                                                       \
-{                                                                              \
-    cudaError_t status = (func);                                               \
-    if (status != cudaSuccess) {                                               \
-        fprintf(stderr,"CUDA API failed at line %d with error: %s (%d)\n",      \
-               __LINE__, cudaGetErrorString(status), status);                  \
-    }                                                                          \
-}
-
-#define CHECK_CUSPARSE(func)                                                   \
-{                                                                              \
-    cusparseStatus_t status = (func);                                          \
-    if (status != CUSPARSE_STATUS_SUCCESS) {                                   \
-        fprintf(stderr,"CUSPARSE API failed at line %d with error: %s (%d)\n",  \
-               __LINE__, cusparseGetErrorString(status), status); 				\
-    }                                                                          \
-}
-
 #include "errorfunc.h"
 #include "log.h"
 
@@ -59,7 +40,9 @@ const double DOUBLE_ZERO[32]={0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0,
                               0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0};
 
 using namespace std;
-#define TWO_DIMENSIONAL
+//#define TWO_DIMENSIONAL
+//#define CONVERGENCE_CHECK
+#define MULTIGRID_SOLVER
 
 #define DIM 3
 
@@ -209,8 +192,12 @@ static void calculateViscosityV();
 static void calculateGravity();
 static void calculateAcceleration();
 static void calculateMatrixA( void );
+static void freeMatrixA( void );
 static void calculateMatrixC( void );
+static void freeMatrixC( void );
 static void multiplyMatrixC( void );
+static void calculateMultiGridMatrix( void );
+static void freeMultiGridMatrix( void );
 static void solveWithConjugatedGradient( void );
 static void calculateVirialPressureAtParticle();
 static void calculateVirialPressureInsideRadius();
@@ -314,7 +301,7 @@ inline double dwvdr(const double r, const double h){
 
 
 	clock_t cFrom, cTill, cStart, cEnd;
-	clock_t cNeigh=0, cExplicit=0, cImplicitTriplet=0, cImplicitInsert=0, cImplicitMatrix=0, cImplicitMulti=0, cImplicitSolve=0, cVirial=0, cOther=0;
+	clock_t cNeigh=0, cExplicit=0, cImplicitTriplet=0, cImplicitInsert=0, cImplicitMatrix=0, cImplicitMulti=0, cImplicitSolve=0, cPrecondition=0, cVirial=0, cOther=0;
 
 int main(int argc, char *argv[])
 {
@@ -350,18 +337,6 @@ int main(int argc, char *argv[])
 		}
 		#endif
     }
-	
-	#pragma acc enter data create(ParticleCount,ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
-	#pragma acc enter data create(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
-	#pragma acc enter data create(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
-	#pragma acc enter data create(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
-	#pragma acc enter data create(FluidParticleBegin,FluidParticleEnd)
-	#pragma acc enter data create(WallParticleBegin,WallParticleEnd)
-	#pragma acc enter data create(Gravity[0:DIM])
-	#pragma acc enter data create(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
-	#pragma acc enter data create(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
-	
-	
     readDataFile(datafilename);
     readGridFile(gridfilename);
     {
@@ -373,17 +348,26 @@ int main(int argc, char *argv[])
     initializeWall();
     initializeDomain();
 	
-//	#pragma acc enter data create(ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
+//	#pragma acc enter data create(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
+//	#pragma acc enter data create(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
+//	#pragma acc enter data create(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
+//	#pragma acc enter data create(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
 //	#pragma acc enter data create(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
 //	#pragma acc enter data create(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
 //	#pragma acc enter data create(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
 //	#pragma acc enter data create(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
+//	#pragma acc enter data create(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
 //	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
 //	#pragma acc enter data create(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
+//	#pragma acc enter data create(FluidParticleBegin,FluidParticleEnd)
 //	#pragma acc enter data create(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
 //	#pragma acc enter data create(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
 //	#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
 //	#pragma acc enter data create(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
+//	#pragma acc enter data create(Gravity[0:DIM])
+//	#pragma acc enter data create(WallParticleBegin,WallParticleEnd)
+//	#pragma acc enter data create(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
+//	#pragma acc enter data create(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
 	
 	#pragma acc update device(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
 	#pragma acc update device(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
@@ -402,76 +386,85 @@ int main(int argc, char *argv[])
 	calculateGravityCenter();
 	calculateDensityP();
     writeVtkFile("output.vtk");
-
+	
 	{
         time_t t=time(NULL);
         log_printf("start main roop at %s\n",ctime(&t));
     }
     int iStep=(int)(Time/Dt);
+	OutputNext = Time;
+	VtkOutputNext = Time;
 	cStart = clock();
 	cFrom = cStart;
-    while(Time < EndTime + 1.0e-5*Dt){
-    	
-    	if( Time + 1.0e-5*Dt >= OutputNext ){
-            char filename[256];
-            sprintf(filename,proffilename,iStep);
-            writeProfFile(filename);
-            log_printf("@ Prof Output Time : %e\n", Time );
-            OutputNext += OutputInterval;
-			cTill = clock(); cOther += (cTill-cFrom); cFrom = cTill;
-        }
+	while(Time < EndTime + 1.0e-5*Dt){
 		
-        // particle movement
-        calculateConvection();
-
-        // wall calculation
-        calculateWall();
-
-        // periodic boundary calculation
-        calculatePeriodicBoundary();
-
-        // reset Force to calculate conservative interaction
-        resetForce();
-    	cTill = clock(); cExplicit += (cTill-cFrom); cFrom = cTill;
-
-        // calculate Neighbor
+		if( Time + 1.0e-5*Dt >= OutputNext ){
+			char filename[256];
+			sprintf(filename,proffilename,iStep);
+			writeProfFile(filename);
+			log_printf("@ Prof Output Time : %e\n", Time );
+			OutputNext += OutputInterval;
+			cTill = clock(); cOther += (cTill-cFrom); cFrom = cTill;
+		}
+		
+		// particle movement
+		calculateConvection();
+		// wall calculation
+		calculateWall();
+		// periodic boundary calculation
+		calculatePeriodicBoundary();
+		// reset Force to calculate conservative interaction
+		resetForce();
+		cTill = clock(); cExplicit += (cTill-cFrom); cFrom = cTill;
+		
+		// calculate Neighbor
 		calculateCellParticle();
-        calculateNeighbor();
-        cTill = clock(); cNeigh += (cTill-cFrom); cFrom = cTill;
-
-        // calculate density
-        calculateDensityA();
-    	calculateGravityCenter();
-    	calculateDensityP();
-
-    	// calculate physical coefficient (viscosity, bulk modulus, bulk viscosity..)
+		calculateNeighbor();
+		cTill = clock(); cNeigh += (cTill-cFrom); cFrom = cTill;
+		
+		// calculate density
+		calculateDensityA();
+		calculateGravityCenter();
+		calculateDensityP();
+		
+		// calculate physical coefficient (viscosity, bulk modulus, bulk viscosity..)
 		calculatePhysicalCoefficients();
-
-        // calculate P(s,rho) s:fixed
-        calculatePressureA();
-    	
-    	// calculate diffuse interface force
+		
+		// calculate P(s,rho) s:fixed
+		calculatePressureA();
+		
+		// calculate diffuse interface force
 		calculateDiffuseInterface();
-        
-        // calculate Gravity
-        calculateGravity();
-
-        // calculate intermidiate Velocity
-        calculateAcceleration();
-        cTill = clock(); cExplicit += (cTill-cFrom); cFrom = cTill;
-    	
-       // calculate viscosity pressure implicitly
-    	calculateMatrixA();
-    	calculateMatrixC();
-    	cTill = clock(); cImplicitMatrix += (cTill-cFrom); cFrom = cTill;
-    	multiplyMatrixC();
-    	cTill = clock(); cImplicitMulti += (cTill-cFrom); cFrom = cTill;
-    	solveWithConjugatedGradient();
-        cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;    	
-    	
-
-        if( Time + 1.0e-5*Dt >= VtkOutputNext ){
- 		   	calculateDivergenceP();
+		
+		// calculate Gravity
+		calculateGravity();
+		
+		// calculate intermidiate Velocity
+		calculateAcceleration();
+		cTill = clock(); cExplicit += (cTill-cFrom); cFrom = cTill;
+		
+		
+		// calculate viscosity pressure implicitly
+		calculateMatrixA();
+		calculateMatrixC();
+		cTill = clock(); cImplicitMatrix += (cTill-cFrom); cFrom = cTill;
+		multiplyMatrixC();
+		freeMatrixC();
+		cTill = clock(); cImplicitMulti += (cTill-cFrom); cFrom = cTill;
+		#ifdef MULTIGRID_SOLVER
+		calculateMultiGridMatrix();
+		cTill = clock(); cPrecondition += (cTill-cFrom); cFrom = cTill;
+		#endif
+		solveWithConjugatedGradient();
+		#ifdef MULTIGRID_SOLVER
+		freeMultiGridMatrix();
+		#endif
+		freeMatrixA();
+		cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;
+		
+		
+		if( Time + 1.0e-5*Dt >= VtkOutputNext ){
+			calculateDivergenceP();
     		calculatePressureP();
         	calculateViscosityV();
     		calculateVirialStressAtParticle();
@@ -501,35 +494,39 @@ int main(int argc, char *argv[])
     	log_printf("implicit insert:         %lf [CPU sec]\n", (double)cImplicitInsert/CLOCKS_PER_SEC);
     	log_printf("implicit matrix:         %lf [CPU sec]\n", (double)cImplicitMatrix/CLOCKS_PER_SEC);
     	log_printf("implicit multiplication: %lf [CPU sec]\n", (double)cImplicitMulti/CLOCKS_PER_SEC);
-    	log_printf("implicit solve         : %lf [CPU sec]\n", (double)cImplicitSolve/CLOCKS_PER_SEC);
+    	log_printf("precondition             %lf [CPU sec]\n", (double)cPrecondition/CLOCKS_PER_SEC);
+    	log_printf("implicit solve         : %lf [CPU sec]\n", (double)(cPrecondition+cImplicitSolve)/CLOCKS_PER_SEC);
     	log_printf("virial calculation:      %lf [CPU sec]\n", (double)cVirial/CLOCKS_PER_SEC);
     	log_printf("other calculation:       %lf [CPU sec]\n", (double)cOther/CLOCKS_PER_SEC);
-    	log_printf("total:                   %lf [CPU sec]\n", (double)(cNeigh+cExplicit+cImplicitTriplet+cImplicitInsert+cImplicitMatrix+cImplicitMulti+cImplicitSolve+cVirial+cOther)/CLOCKS_PER_SEC);
+    	log_printf("total:                   %lf [CPU sec]\n", (double)(cNeigh+cExplicit+cImplicitTriplet+cImplicitInsert+cImplicitMatrix+cImplicitMulti+cPrecondition+cImplicitSolve+cVirial+cOther)/CLOCKS_PER_SEC);
     	log_printf("total (check):           %lf [CPU sec]\n", (double)(cEnd-cStart)/CLOCKS_PER_SEC);
     }
+
 	
-	#pragma acc exit data delete(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
-	#pragma acc exit data delete(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
-	#pragma acc exit data delete(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
-	#pragma acc exit data delete(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
-	#pragma acc exit data delete(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
-	#pragma acc exit data delete(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
-	#pragma acc exit data delete(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
-	#pragma acc exit data delete(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
-	#pragma acc exit data delete(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
-	#pragma acc exit data delete(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
-	#pragma acc exit data delete(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
-	#pragma acc exit data delete(FluidParticleBegin,FluidParticleEnd)
-	#pragma acc exit data delete(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
-	#pragma acc exit data delete(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
-	#pragma acc exit data delete(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
-	#pragma acc exit data delete(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
-	#pragma acc exit data delete(Gravity[0:DIM])
-	#pragma acc exit data delete(WallParticleBegin,WallParticleEnd)
-	#pragma acc exit data delete(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
-	#pragma acc exit data delete(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
-
-
+//	動的メモリ確保をしていない変数や配列に対してメモリ解放を行うとcuMemFreeがエラーを返す
+//	プログラム終了時のメモリ解放に期待して、明示的なメモリ解放は省略
+	
+//	#pragma acc exit data delete(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
+//	#pragma acc exit data delete(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
+//	#pragma acc exit data delete(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
+//	#pragma acc exit data delete(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
+//	#pragma acc exit data delete(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
+//	#pragma acc exit data delete(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
+//	#pragma acc exit data delete(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
+//	#pragma acc exit data delete(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
+//	#pragma acc exit data delete(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
+//	#pragma acc exit data delete(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+//	#pragma acc exit data delete(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
+//	#pragma acc exit data delete(FluidParticleBegin,FluidParticleEnd)
+//	#pragma acc exit data delete(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
+//	#pragma acc exit data delete(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
+//	#pragma acc exit data delete(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
+//	#pragma acc exit data delete(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
+//	#pragma acc exit data delete(Gravity[0:DIM])
+//	#pragma acc exit data delete(WallParticleBegin,WallParticleEnd)
+//	#pragma acc exit data delete(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
+//	#pragma acc exit data delete(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
+	
     return 0;
 
 }
@@ -573,12 +570,6 @@ static void readDataFile(char *filename)
         }
     }
     fclose(fp);
-	
-	#pragma acc update device(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT])
-	#pragma acc update device(SurfaceTension[0:TYPE_COUNT],InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
-	#pragma acc update device(Gravity[0:DIM])
-	#pragma acc update device(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM])
-	
     return;
 }
 
@@ -602,8 +593,8 @@ static void readGridFile(char *filename)
 #else
 	ParticleVolume = ParticleSpacing*ParticleSpacing*ParticleSpacing;
 #endif
-    	
-		ParticleIndex = (int *)malloc(ParticleCount*sizeof(int));
+		
+    	ParticleIndex = (int *)malloc(ParticleCount*sizeof(int));
         Property = (int *)malloc(ParticleCount*sizeof(int));
         Position = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
         Velocity = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
@@ -613,7 +604,7 @@ static void readGridFile(char *filename)
         VolStrainP = (double *)malloc(ParticleCount*sizeof(double));
     	DivergenceP = (double *)malloc(ParticleCount*sizeof(double));
         PressureP = (double *)malloc(ParticleCount*sizeof(double));
-    	VirialPressureAtParticle = (double *)malloc(ParticleCount*sizeof(double));
+        VirialPressureAtParticle = (double *)malloc(ParticleCount*sizeof(double));
         VirialPressureInsideRadius = (double *)malloc(ParticleCount*sizeof(double));
     	VirialStressAtParticle = (double (*) [DIM][DIM])malloc(ParticleCount*sizeof(double [DIM][DIM]));
     	Mass = (double (*))malloc(ParticleCount*sizeof(double));
@@ -792,24 +783,24 @@ static void writeVtkFile(char *filename)
 //		fprintf(fp, "%e\n", (float)PressureA[iP]);
 //	}
 //	fprintf(fp, "\n");
-//	fprintf(fp, "SCALARS VolStrainP float 1\n");
-//	fprintf(fp, "LOOKUP_TABLE default\n");
-//	for(int iP=0;iP<ParticleCount;++iP){
-//		fprintf(fp, "%e\n", (float)VolStrainP[iP]);
-//	}
-//	fprintf(fp, "\n");
-//	fprintf(fp, "SCALARS DivergenceP float 1\n");
-//	fprintf(fp, "LOOKUP_TABLE default\n");
-//	for(int iP=0;iP<ParticleCount;++iP){
-//		fprintf(fp, "%e\n", (float)DivergenceP[iP]);
-//	}
-//	fprintf(fp, "\n");
-//	fprintf(fp, "SCALARS PressureP float 1\n");
-//	fprintf(fp, "LOOKUP_TABLE default\n");
-//	for(int iP=0;iP<ParticleCount;++iP){
-//		fprintf(fp, "%e\n", (float)PressureP[iP]);
-//	}
-//	fprintf(fp, "\n");
+	fprintf(fp, "SCALARS VolStrainP float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)VolStrainP[iP]);
+	}
+	fprintf(fp, "\n");
+	fprintf(fp, "SCALARS DivergenceP float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)DivergenceP[iP]);
+	}
+	fprintf(fp, "\n");
+	fprintf(fp, "SCALARS PressureP float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)PressureP[iP]);
+	}
+	fprintf(fp, "\n");
 	fprintf(fp, "SCALARS VirialPressureAtParticle float 1\n");
 	fprintf(fp, "LOOKUP_TABLE default\n");
 	for(int iP=0;iP<ParticleCount;++iP){
@@ -898,92 +889,73 @@ static void initializeWeight()
 	RadiusV = RadiusRatioV*ParticleSpacing;
 	
 	
-#ifdef TWO_DIMENSIONAL
-		Swa = 1.0/2.0 * 2.0/15.0 * M_PI /ParticleSpacing/ParticleSpacing;
-		Swg = 1.0/2.0 * 1.0/3.0 * M_PI /ParticleSpacing/ParticleSpacing;
-		Swp = 1.0/2.0 * 1.0/3.0 * M_PI /ParticleSpacing/ParticleSpacing;
-		Swv = 1.0/2.0 * 1.0/3.0 * M_PI /ParticleSpacing/ParticleSpacing;
-		R2g = 1.0/2.0 * 1.0/30.0* M_PI *RadiusG*RadiusG /ParticleSpacing/ParticleSpacing /Swg;
-#else
-		//code for three dimensional
-		Swa = 1.0/3.0 * 1.0/5.0*M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
-		Swg = 1.0/3.0 * 2.0/5.0 * M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
-		Swp = 1.0/3.0 * 2.0/5.0 * M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
-		Swv = 1.0/3.0 * 2.0/5.0 * M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
-		R2g = 1.0/3.0 * 4.0/105.0*M_PI *RadiusG*RadiusG /ParticleSpacing/ParticleSpacing/ParticleSpacing /Swg;
-#endif
+	#ifdef TWO_DIMENSIONAL
+	Swa = 1.0/2.0 * 2.0/15.0 * M_PI /ParticleSpacing/ParticleSpacing;
+	Swg = 1.0/2.0 * 1.0/3.0 * M_PI /ParticleSpacing/ParticleSpacing;
+	Swp = 1.0/2.0 * 1.0/3.0 * M_PI /ParticleSpacing/ParticleSpacing;
+	Swv = 1.0/2.0 * 1.0/3.0 * M_PI /ParticleSpacing/ParticleSpacing;
+	R2g = 1.0/2.0 * 1.0/30.0* M_PI *RadiusG*RadiusG /ParticleSpacing/ParticleSpacing /Swg;
+	#else
+	//code for three dimensional
+	Swa = 1.0/3.0 * 1.0/5.0*M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
+	Swg = 1.0/3.0 * 2.0/5.0 * M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
+	Swp = 1.0/3.0 * 2.0/5.0 * M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
+	Swv = 1.0/3.0 * 2.0/5.0 * M_PI /ParticleSpacing/ParticleSpacing/ParticleSpacing;
+	R2g = 1.0/3.0 * 4.0/105.0*M_PI *RadiusG*RadiusG /ParticleSpacing/ParticleSpacing/ParticleSpacing /Swg;
+	#endif
 	
+	{// N0a
+		const double radius_ratio = RadiusA/ParticleSpacing;
+		const int range = (int)ceil(radius_ratio);
+		const int rangeX = range;
+		const int rangeY = range;
+		#ifdef TWO_DIMENSIONAL
+		const int rangeZ = 0;
+		#else
+		const int rangeZ = range;
+		#endif
+		
+		int count = 0;
+		double sum = 0.0;
+		for(int iX=-rangeX;iX<=rangeX;++iX){
+			for(int iY=-rangeY;iY<=rangeY;++iY){
+				for(int iZ=-rangeZ;iZ<=rangeZ;++iZ){
+					if(!(iX==0 && iY==0 && iZ==0)){
+						const double x = ParticleSpacing * ((double)iX);
+						const double y = ParticleSpacing * ((double)iY);
+						const double z = ParticleSpacing * ((double)iZ);
+						const double rij2 = x*x + y*y + z*z;
+						if(rij2<=RadiusA*RadiusA){
+							const double rij = sqrt(rij2);
+							const double wij = wa(rij,RadiusA);
+							sum += wij;
+							count ++;
+						}
+					}
+				}
+			}
+		}
+		
+		N0a = sum;
+		log_printf("N0a = %e, count=%d\n", N0a, count);
+	}	
 	
-	    {// N0a
-        const double radius_ratio = RadiusA/ParticleSpacing;
-        const int range = (int)(radius_ratio +3.0);
-        int count = 0;
-        double sum = 0.0;
-#ifdef TWO_DIMENSIONAL
-        for(int iX=-range;iX<=range;++iX){
-            for(int iY=-range;iY<=range;++iY){
-                if(!(iX==0 && iY==0)){
-                	const double x = ParticleSpacing * ((double)iX);
-                	const double y = ParticleSpacing * ((double)iY);
-                    const double rij2 = x*x + y*y;
-                    if(rij2<=RadiusA*RadiusA){
-                        const double rij = sqrt(rij2);
-                        const double wij = wa(rij,RadiusA);
-                        sum += wij;
-                        count ++;
-                    }
-                }
-            }
-        }
-#else
-        for(int iX=-range;iX<=range;++iX){
-            for(int iY=-range;iY<=range;++iY){
-                for(int iZ=-range;iZ<=range;++iZ){
-                    if(!(iX==0 && iY==0 && iZ==0)){
-                    	const double x = ParticleSpacing * ((double)iX);
-                    	const double y = ParticleSpacing * ((double)iY);
-                    	const double z = ParticleSpacing * ((double)iZ);
-                        const double rij2 = x*x + y*y + z*z;
-                        if(rij2<=RadiusA*RadiusA){
-                            const double rij = sqrt(rij2);
-                            const double wij = wa(rij,RadiusA);
-                            sum += wij;
-                            count ++;
-                        }
-                    }
-                }
-            }
-        }
-#endif
-        N0a = sum;
-        log_printf("N0a = %e, count=%d\n", N0a, count);
-    }	
-
     {// N0p
         const double radius_ratio = RadiusP/ParticleSpacing;
-        const int range = (int)(radius_ratio +3.0);
+        const int range = (int)ceil(radius_ratio);
+    	const int rangeX = range;
+		const int rangeY = range;
+		#ifdef TWO_DIMENSIONAL
+		const int rangeZ = 0;
+		#else
+		const int rangeZ = range;
+		#endif
+
         int count = 0;
         double sum = 0.0;
-#ifdef TWO_DIMENSIONAL
-        for(int iX=-range;iX<=range;++iX){
-            for(int iY=-range;iY<=range;++iY){
-                if(!(iX==0 && iY==0)){
-                	const double x = ParticleSpacing * ((double)iX);
-                	const double y = ParticleSpacing * ((double)iY);
-                    const double rij2 = x*x + y*y;
-                    if(rij2<=RadiusP*RadiusP){
-                        const double rij = sqrt(rij2);
-                        const double wij = wp(rij,RadiusP);
-                        sum += wij;
-                        count ++;
-                    }
-                }
-            }
-        }
-#else
-        for(int iX=-range;iX<=range;++iX){
-            for(int iY=-range;iY<=range;++iY){
-                for(int iZ=-range;iZ<=range;++iZ){
+        for(int iX=-rangeX;iX<=rangeX;++iX){
+            for(int iY=-rangeY;iY<=rangeY;++iY){
+                for(int iZ=-rangeZ;iZ<=rangeZ;++iZ){
                     if(!(iX==0 && iY==0 && iZ==0)){
                     	const double x = ParticleSpacing * ((double)iX);
                     	const double y = ParticleSpacing * ((double)iY);
@@ -999,7 +971,6 @@ static void initializeWeight()
                 }
             }
         }
-#endif
         N0p = sum;
         log_printf("N0p = %e, count=%d\n", N0p, count);
     }
@@ -1007,7 +978,6 @@ static void initializeWeight()
 	#pragma acc update device(RadiusA,RadiusG,RadiusP,RadiusV)
 	#pragma acc update device(Swa,Swg,Swp,Swv,R2g)
 	#pragma acc update device(N0a,N0p)
-
 }
 
 
@@ -1084,45 +1054,50 @@ static void initializeWall()
 	}
 	
 	#pragma acc update device(WallRotation[0:WALL_END][0:DIM][0:DIM])
-	
+
 }
 
 static void initializeDomain( void )
 {
-	CellWidth = ParticleSpacing;
+	MaxRadius = ((RadiusA>MaxRadius) ? RadiusA : MaxRadius);
+	MaxRadius = ((2.0*RadiusP>MaxRadius) ? 2.0*RadiusP : MaxRadius);
+	MaxRadius = ((RadiusV>MaxRadius) ? RadiusV : MaxRadius);
+	fprintf(stderr, "MaxRadius = %lf\n", MaxRadius);
+	
+	//CellWidth=ParticleSpacing;
+	CellWidth = ceil(MaxRadius/ParticleSpacing)*ParticleSpacing;
 	
 	double cellCount[DIM];
 	
-	cellCount[0] = round((DomainMax[0] - DomainMin[0])/CellWidth);
-	cellCount[1] = round((DomainMax[1] - DomainMin[1])/CellWidth);
+	cellCount[0] = (DomainMax[0] - DomainMin[0])/CellWidth;
+	cellCount[1] = (DomainMax[1] - DomainMin[1])/CellWidth;
 	#ifdef TWO_DIMENSIONAL
 	cellCount[2] = 1;
 	#else
-	cellCount[2] = round((DomainMax[2] - DomainMin[2])/CellWidth);
+	cellCount[2] = (DomainMax[2] - DomainMin[2])/CellWidth;
 	#endif
 	
-	CellCount[0] = (int)cellCount[0];
-	CellCount[1] = (int)cellCount[1];
-	CellCount[2] = (int)cellCount[2];
+	CellCount[0] = (int)ceil(cellCount[0]);
+	CellCount[1] = (int)ceil(cellCount[1]);
+	CellCount[2] = (int)ceil(cellCount[2]);
 	TotalCellCount = CellCount[0]*CellCount[1]*CellCount[2];
 	fprintf(stderr, "TotalCellCount = %d\n", TotalCellCount);
-	
-	if(cellCount[0]!=(double)CellCount[0] || cellCount[1]!=(double)CellCount[1] ||cellCount[2]!=(double)CellCount[2]){
-		fprintf(stderr,"DomainWidth/CellWidth is not integer\n");
-		DomainMax[0] = DomainMin[0] + CellWidth*(double)CellCount[0];
-		DomainMax[1] = DomainMin[1] + CellWidth*(double)CellCount[1];
-		DomainMax[2] = DomainMin[2] + CellWidth*(double)CellCount[2];
-		fprintf(stderr,"Changing the Domain Max to (%e,%e,%e)\n", DomainMax[0], DomainMax[1], DomainMax[2]);
-	}
-	DomainWidth[0] = DomainMax[0] - DomainMin[0];
-	DomainWidth[1] = DomainMax[1] - DomainMin[1];
-	DomainWidth[2] = DomainMax[2] - DomainMin[2];	
-	
+
+    if(cellCount[0]!=(double)CellCount[0] || cellCount[1]!=(double)CellCount[1] ||cellCount[2]!=(double)CellCount[2]){
+        fprintf(stderr,"DomainWidth/CellWidth is not integer\n");
+        DomainMax[0] = DomainMin[0] + CellWidth*(double)CellCount[0];
+        DomainMax[1] = DomainMin[1] + CellWidth*(double)CellCount[1];
+        DomainMax[2] = DomainMin[2] + CellWidth*(double)CellCount[2];
+        fprintf(stderr,"Changing the Domain Max to (%e,%e,%e)\n", DomainMax[0], DomainMax[1], DomainMax[2]);
+    }
+    DomainWidth[0] = DomainMax[0] - DomainMin[0];
+    DomainWidth[1] = DomainMax[1] - DomainMin[1];
+    DomainWidth[2] = DomainMax[2] - DomainMin[2];
+
 	CellFluidParticleBegin = (int *)malloc( TotalCellCount * sizeof(int) );
 	CellFluidParticleEnd   = (int *)malloc( TotalCellCount * sizeof(int) );
 	CellWallParticleBegin  = (int *)malloc( TotalCellCount * sizeof(int) );
 	CellWallParticleEnd    = (int *)malloc( TotalCellCount * sizeof(int) );
-	
 	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount]) attach(CellFluidParticleBegin)
 	#pragma acc enter data create(CellFluidParticleEnd[0:TotalCellCount]) attach(CellFluidParticleEnd)
 	#pragma acc enter data create(CellWallParticleBegin[0:TotalCellCount]) attach(CellWallParticleBegin)
@@ -1134,17 +1109,11 @@ static void initializeDomain( void )
 		++ParticleCountPower;
 	}
 	PowerParticleCount = (1<<ParticleCountPower);
-	
 	fprintf(stderr,"memory for CellIndex and CellParticle %d\n", PowerParticleCount );
 	CellIndex    = (int *)malloc( (PowerParticleCount) * sizeof(int) );
     CellParticle = (int *)malloc( (PowerParticleCount) * sizeof(int) );
 	#pragma acc enter data create(CellIndex[0:PowerParticleCount]) attach(CellIndex)
 	#pragma acc enter data create(CellParticle[0:PowerParticleCount]) attach(CellParticle)
-	
-	MaxRadius = ((RadiusA>MaxRadius) ? RadiusA : MaxRadius);
-	MaxRadius = ((2.0*RadiusP>MaxRadius) ? 2.0*RadiusP : MaxRadius);
-	MaxRadius = ((RadiusV>MaxRadius) ? RadiusV : MaxRadius);
-	fprintf(stderr, "MaxRadius = %lf\n", MaxRadius);
 	
 	#pragma acc update device(CellCount[0:DIM],TotalCellCount)
 	#pragma acc update device(DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
@@ -1212,9 +1181,7 @@ static void calculateCellParticle()
 		CellWallParticleEnd[iC]=0;
 	}
 	
-	int threshold[4]={0,0,0,0};
-	#pragma acc kernels copy(threshold[0:4]) \
-	present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+	#pragma acc kernels present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=1; iP<ParticleCount+1; ++iP){
@@ -1231,26 +1198,79 @@ static void calculateCellParticle()
 			else if( CellIndex[iP] - TotalCellCount < TotalCellCount ){
 				CellWallParticleBegin[ CellIndex[iP]-TotalCellCount ] = iP;
 			}
-			if( CellIndex[iP-1]/TotalCellCount < CellIndex[iP]/TotalCellCount ){
-				if( CellIndex[iP-1] < TotalCellCount ){
-					threshold[1] = iP;
-				}
-				else if( CellIndex[iP-1] - TotalCellCount < TotalCellCount ){
-					threshold[3] = iP;
-				}
-				if( CellIndex[iP] < TotalCellCount ){
-					threshold[0] = iP;
-				}
-				else if( CellIndex[iP] - TotalCellCount < TotalCellCount ){
-					threshold[2] = iP;
-				}
-			}
 		}
 	}
-	FluidParticleBegin=threshold[0];
-	FluidParticleEnd=threshold[1];
-	WallParticleBegin=threshold[2];
-	WallParticleEnd=threshold[3];
+	
+	// Fill zeros in CellParticleBegin and CellParticleEnd
+	int power = 0;
+	const int N = 2*TotalCellCount;
+	while( (N>>power) != 0 ){
+		power++;
+	}
+	const int powerN = (1<<power);
+	
+	int * ptr = (int *)malloc( powerN * sizeof(int));
+	#pragma acc enter data create(ptr[0:powerN])
+	
+	#pragma acc kernels present(ptr[0:powerN])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<powerN;++iRow){
+		ptr[iRow]=0;
+	}
+	
+	#pragma acc kernels present(ptr[0:powerN],CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iC=0;iC<TotalCellCount;++iC){
+		ptr[iC]               =CellFluidParticleEnd[iC]-CellFluidParticleBegin[iC];
+		ptr[iC+TotalCellCount]=CellWallParticleEnd[iC] -CellWallParticleBegin[iC];
+	}
+	
+	// Convert ptr to cumulative sum
+	for(int iMain=0;iMain<power;++iMain){
+		const int dist = (1<<iMain);	
+		#pragma acc kernels present(ptr[0:powerN])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iRow=0;iRow<powerN;iRow+=(dist<<1)){
+			ptr[iRow]+=ptr[iRow+dist];
+		}
+	}
+	for(int iMain=0;iMain<power;++iMain){
+		const int dist = (powerN>>(iMain+1));	
+		#pragma acc kernels present(ptr[0:powerN])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iRow=0;iRow<powerN;iRow+=(dist<<1)){
+			ptr[iRow]-=ptr[iRow+dist];
+			ptr[iRow+dist]+=ptr[iRow];
+		}
+	}
+	
+	#pragma acc kernels present(ptr[0:powerN],CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iC=0;iC<TotalCellCount;++iC){
+		if(iC==0){	CellFluidParticleBegin[iC]=0;	}
+		else     { 	CellFluidParticleBegin[iC]=ptr[iC-1];	}
+		CellFluidParticleEnd[iC]  =ptr[iC];
+		CellWallParticleBegin[iC] =ptr[iC-1+TotalCellCount];
+		CellWallParticleEnd[iC]   =ptr[iC+TotalCellCount];
+	}
+	
+	free(ptr);
+	#pragma acc exit data delete(ptr[0:powerN])
+	
+	#pragma acc kernels present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
+	{
+		FluidParticleBegin = CellFluidParticleBegin[0];
+		FluidParticleEnd   = CellFluidParticleEnd[TotalCellCount-1];
+		WallParticleBegin  = CellWallParticleBegin[0];
+		WallParticleEnd    = CellWallParticleEnd[TotalCellCount-1];
+	}
+	#pragma acc update host(FluidParticleBegin,FluidParticleEnd,WallParticleBegin,WallParticleEnd)
+//	fprintf(stderr,"line:%d, FluidParticleBegin=%d, FluidParticleEnd=%d, WallParticleBegin=%d, WallParticleEnd=%d\n",__LINE__,FluidParticleBegin, FluidParticleEnd, WallParticleBegin, WallParticleEnd);
 	
 	// re-arange particles in CellIndex order
 	#pragma acc kernels present(ParticleIndex[0:ParticleCount])
@@ -1319,7 +1339,6 @@ static void calculateCellParticle()
 }
 
 
-
 static void calculateNeighbor( void )
 {
 	#pragma acc kernels
@@ -1343,12 +1362,23 @@ static void calculateNeighbor( void )
 		}
 	}
 	
+	const int rangeX = (int)(ceil(MaxRadius/CellWidth));
+	const int rangeY = (int)(ceil(MaxRadius/CellWidth));
+	#ifdef TWO_DIMENSIONAL
+	const int rangeZ = 0;
+	#else // not TWO_DIMENSIONAL (three dimensional) 
+	const int rangeZ = (int)(ceil(MaxRadius/CellWidth));
+	#endif
+	
+	#define MAX_1D_NEIGHBOR_CELL_COUNT 3
+	assert( 2*rangeX+1 <= MAX_1D_NEIGHBOR_CELL_COUNT );
+	assert( 2*rangeY+1 <= MAX_1D_NEIGHBOR_CELL_COUNT );
+	assert( 2*rangeZ+1 <= MAX_1D_NEIGHBOR_CELL_COUNT );
+	
 	#pragma acc kernels present(CellParticle[0:PowerParticleCount],CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount],Position[0:ParticleCount][0:DIM])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
-		const int range = (int)(ceil(MaxRadius/CellWidth));
-		
 		const int iCX=(CellIndex[iP]/(CellCount[1]*CellCount[2]))%TotalCellCount;
 		const int iCY=(CellIndex[iP]/CellCount[2])%CellCount[1];
 		const int iCZ=CellIndex[iP]%CellCount[2];
@@ -1357,77 +1387,39 @@ static void calculateNeighbor( void )
 		// const int iCY=((int)floor((q[iP][1]-DomainMin[1])/CellWidth))%CellCount[1];
 		// const int iCZ=((int)floor((q[iP][2]-DomainMin[2])/CellWidth))%CellCount[2];
 		
-		#ifdef TWO_DIMENSIONAL
-		#pragma acc loop seq
-		for(int jCX=iCX-range;jCX<=iCX+range;++jCX){
-			#pragma acc loop seq
-			for(int jCY=iCY-range;jCY<=iCY+range;++jCY){
-				const int jCZ=0;
-				const int jC=CellId(jCX,jCY,jCZ);
-				#pragma acc loop seq
-				for(int jP=CellFluidParticleBegin[jC];jP<CellFluidParticleEnd[jC];++jP){
-					double qij[DIM];
-					#pragma acc loop seq
-					for(int iD=0;iD<DIM;++iD){
-						qij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-					}
-					const double qij2= qij[0]*qij[0]+qij[1]*qij[1]+qij[2]*qij[2];
-					if(qij2 <= MaxRadius*MaxRadius){
-						if(NeighborCount[iP]>=MAX_NEIGHBOR_COUNT){
-							NeighborCount[iP]++;
-							NeighborFluidCount[iP]++;
-							continue;
-						}
-						Neighbor[iP][NeighborCount[iP]]=jP;
-						NeighborCount[iP]++;
-						NeighborFluidCount[iP]++;
-						
-						if(qij2 <= RadiusP*RadiusP){
-							NeighborP[iP][NeighborCountP[iP]]=jP;
-							NeighborCountP[iP]++;
-						}
-					}
-				}
-			}
-		}
-		#pragma acc loop seq
-		for(int jCX=iCX-range;jCX<=iCX+range;++jCX){
-			#pragma acc loop seq
-			for(int jCY=iCY-range;jCY<=iCY+range;++jCY){
-				const int jCZ=0;
-				const int jC=CellId(jCX,jCY,jCZ);
-				#pragma acc loop seq
-				for(int jP=CellWallParticleBegin[jC];jP<CellWallParticleEnd[jC];++jP){
-					double qij[DIM];
-					#pragma acc loop seq
-					for(int iD=0;iD<DIM;++iD){
-						qij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-					}
-					const double qij2= qij[0]*qij[0]+qij[1]*qij[1]+qij[2]*qij[2];
-					if(qij2 <= MaxRadius*MaxRadius){
-						if(NeighborCount[iP]>=MAX_NEIGHBOR_COUNT){
-							NeighborCount[iP]++;
-							continue;
-						}
-						Neighbor[iP][NeighborCount[iP]]=jP;
-						NeighborCount[iP]++;
-						
-						if(qij2 <= RadiusP*RadiusP){
-							NeighborP[iP][NeighborCountP[iP]]=jP;
-							NeighborCountP[iP]++;
-						}
-					}
-				}
-			}
-		}
+		int jCXs[MAX_1D_NEIGHBOR_CELL_COUNT];
+		int jCYs[MAX_1D_NEIGHBOR_CELL_COUNT];
+		int jCZs[MAX_1D_NEIGHBOR_CELL_COUNT];
 		
-		#else // TWO_DIMENSIONAL
 		#pragma acc loop seq
-		for(int jCX=iCX-range;jCX<=iCX+range;++jCX){
+		for(int jX=0;jX<2*rangeX+1;++jX){
+			jCXs[jX]=((iCX-rangeX+jX)%CellCount[0]+CellCount[0])%CellCount[0];
+		}
+		#pragma acc loop seq
+		for(int jY=0;jY<2*rangeY+1;++jY){
+			jCYs[jY]=((iCY-rangeY+jY)%CellCount[1]+CellCount[1])%CellCount[1];
+		}
+		#pragma acc loop seq
+		for(int jZ=0;jZ<2*rangeZ+1;++jZ){
+			jCZs[jZ]=((iCZ-rangeZ+jZ)%CellCount[2]+CellCount[2])%CellCount[2];
+		}
+		const int bX = (2*rangeX)-(iCX+rangeX)%CellCount[0];
+		const int jXmin= ( ( bX>0 )? bX:0 );
+		const int bY = (2*rangeY)-(iCY+rangeY)%CellCount[1];
+		const int jYmin= ( ( bY>0 )? bY:0 );
+		const int bZ = (2*rangeZ)-(iCZ+rangeZ)%CellCount[2];
+		const int jZmin= ( ( bZ>0 )? bZ:0 );
+		
+		
+		#pragma acc loop seq
+		for(int jX=jXmin;jX<jXmin+(2*rangeX+1);++jX){
 			#pragma acc loop seq
-			for(int jCY=iCY-range;jCY<=iCY+range;++jCY){
+			for(int jY=jYmin;jY<jYmin+(2*rangeY+1);++jY){
 				#pragma acc loop seq
-				for(int jCZ=iCZ-range;jCZ<=iCZ+range;++jCZ){
+				for(int jZ=jZmin;jZ<jZmin+(2*rangeZ+1);++jZ){
+					const int jCX = jCXs[ jX % (2*rangeX+1)];
+					const int jCY = jCYs[ jY % (2*rangeY+1)];
+					const int jCZ = jCZs[ jZ % (2*rangeZ+1)];
 					const int jC=CellId(jCX,jCY,jCZ);
 					#pragma acc loop seq
 					for(int jP=CellFluidParticleBegin[jC];jP<CellFluidParticleEnd[jC];++jP){
@@ -1446,7 +1438,7 @@ static void calculateNeighbor( void )
 							Neighbor[iP][NeighborCount[iP]]=jP;
 							NeighborCount[iP]++;
 							NeighborFluidCount[iP]++;
-						
+							
 							if(qij2 <= RadiusP*RadiusP){
 								NeighborP[iP][NeighborCountP[iP]]=jP;
 								NeighborCountP[iP]++;
@@ -1457,11 +1449,14 @@ static void calculateNeighbor( void )
 			}
 		}
 		#pragma acc loop seq
-		for(int jCX=iCX-range;jCX<=iCX+range;++jCX){
+		for(int jX=jXmin;jX<jXmin+(2*rangeX+1);++jX){
 			#pragma acc loop seq
-			for(int jCY=iCY-range;jCY<=iCY+range;++jCY){
+			for(int jY=jYmin;jY<jYmin+(2*rangeY+1);++jY){
 				#pragma acc loop seq
-				for(int jCZ=iCZ-range;jCZ<=iCZ+range;++jCZ){
+				for(int jZ=jZmin;jZ<jZmin+(2*rangeZ+1);++jZ){
+					const int jCX = jCXs[ jX % (2*rangeX+1)];
+					const int jCY = jCYs[ jY % (2*rangeY+1)];
+					const int jCZ = jCZs[ jZ % (2*rangeZ+1)];
 					const int jC=CellId(jCX,jCY,jCZ);
 					#pragma acc loop seq
 					for(int jP=CellWallParticleBegin[jC];jP<CellWallParticleEnd[jC];++jP){
@@ -1488,7 +1483,6 @@ static void calculateNeighbor( void )
 				}
 			}
 		}
-		#endif // TWO_DIMENSIONAL
 	}
 }
  
@@ -1540,7 +1534,7 @@ static void calculatePhysicalCoefficients()
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		Lambda[iP]=BulkViscosity[Property[iP]];
-		if(VolStrainP[iP]<0.0){Lambda[iP]=0.0;}
+		//if(VolStrainP[iP]<0.0){Lambda[iP]=0.0;}
 	}
 	
 	#pragma acc kernels
@@ -1965,17 +1959,17 @@ static void calculateMatrixA( void )
 		power++;
 	}
 	const int powerN = (1<<power);
-	
+    
 	CsrPtrA = (int *)malloc( powerN * sizeof(int));
-	#pragma acc enter data create(CsrPtrA[0:powerN]) attach(CsrPtrA)
-	
+	#pragma acc enter data create(CsrPtrA[0:powerN])
+    
     #pragma acc kernels
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<powerN;++iRow){
 		CsrPtrA[iRow]=0;
 	}
-
+    
     #pragma acc kernels present(CsrPtrA[0:powerN])
 	#pragma acc loop independent
 	#pragma omp parallel for
@@ -2007,14 +2001,13 @@ static void calculateMatrixA( void )
 			CsrPtrA[iRow+dist]+=CsrPtrA[iRow];
 		}
 	}
-	
+    
     #pragma acc kernels present(CsrPtrA[0:powerN])
-	#pragma acc loop seq
-	for(int iDummy=0;iDummy<1;++iDummy){
+	{
 		NonzeroCountA=CsrPtrA[N];
 	}
 	#pragma acc update host(NonzeroCountA)
-	
+    
 	// calculate coeeficient matrix A and source vector B
 	CsrCofA = (double *)malloc( NonzeroCountA * sizeof(double) );
 	CsrIndA = (int *)malloc( NonzeroCountA * sizeof(int) );
@@ -2022,7 +2015,7 @@ static void calculateMatrixA( void )
 	#pragma acc enter data create(CsrCofA[0:NonzeroCountA]) attach(CsrCofA)
 	#pragma acc enter data create(CsrIndA[0:NonzeroCountA]) attach(CsrIndA)
 	#pragma acc enter data create(VectorB[0:N]) attach(VectorB)
-	
+    
     #pragma acc kernels present(CsrPtrA[0:N],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA])
 	#pragma acc loop independent
 	#pragma omp parallel for
@@ -2042,26 +2035,26 @@ static void calculateMatrixA( void )
 			}
 		}
 	}
-	
+    
     #pragma acc kernels
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iNonzero=0;iNonzero<NonzeroCountA;++iNonzero){
 		CsrCofA[ iNonzero ] = 0.0;
 	}
-	
+    
     #pragma acc kernels
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<N;++iRow){
 		VectorB[iRow]=0.0;
 	}
-	
+    
     #pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],m[0:ParticleCount],Mu[0:ParticleCount],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA],CsrPtrA[0:N],VectorB[0:N])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=FluidParticleBegin;iP<FluidParticleEnd;++iP){
-		
+    
 		// Viscosity term
 		int iN;
 		double selfCof[DIM][DIM]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
@@ -2084,7 +2077,6 @@ static void calculateMatrixA( void )
 				const double wdrij = -dwvdr(dij,RadiusV);
 				const double eij[DIM] = {rij[0]/dij,rij[1]/dij,rij[2]/dij};
 				const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
-				
 				#pragma acc loop seq
 				for(int rD=0;rD<DIM;++rD){
 					const int iRow = DIM*iP+rD;
@@ -2111,6 +2103,7 @@ static void calculateMatrixA( void )
 				}
 			}
 		}
+    
 		#pragma acc loop seq
 		for(int rD=0;rD<DIM;++rD){
 			const int iRow = DIM*iP+rD;
@@ -2122,12 +2115,12 @@ static void calculateMatrixA( void )
 				CsrCofA[ iNonzero ] = selfCof[rD][sD];
 			}
 		}
+    
 		#pragma acc loop seq
 		for(int rD=0;rD<DIM;++rD){
 			const int iRow = DIM*iP+rD;
 			VectorB[iRow]+=sumvec[rD];
 		}
-		
 		// Ineritial Force term
 		#pragma acc loop seq
 		for(int iD=0;iD<DIM;++iD){
@@ -2139,7 +2132,17 @@ static void calculateMatrixA( void )
 			CsrCofA[ iNonzero ] += coefficient;
 			VectorB[iRow] += coefficient*v[iP][iD];
 		}
-	}    
+    
+	}
+    
+}
+
+static void freeMatrixA( void ){
+	free(CsrCofA);
+	free(CsrIndA);
+	free(CsrPtrA);
+	free(VectorB);
+	#pragma acc exit data delete(CsrCofA,CsrIndA,CsrPtrA,VectorB)
 }
 
 static int    NonzeroCountC;
@@ -2206,8 +2209,7 @@ static void calculateMatrixC( void )
 	}
 	
 	#pragma acc kernels present(CsrPtrC[0:powerN])
-	#pragma acc loop seq
-	for(int iDummy=0;iDummy<1;++iDummy){
+	{
 		NonzeroCountC = CsrPtrC[N];
 	}
 	#pragma acc update host(NonzeroCountC)
@@ -2340,6 +2342,15 @@ static void calculateMatrixC( void )
 
 }
 
+
+static void freeMatrixC( void ){
+	free(CsrCofC);
+	free(CsrIndC);
+	free(CsrPtrC);
+	free(VectorP);
+	#pragma acc exit data delete(CsrPtrC,CsrIndC,CsrCofC,VectorP)
+}
+
 static void multiplyMatrixC( void )
 {
 	const int fluidcount = FluidParticleEnd-FluidParticleBegin;
@@ -2421,25 +2432,1025 @@ static void multiplyMatrixC( void )
 			}
 		}
 	}
-	
-	free(CsrPtrC);
-	free(CsrIndC);
-	free(CsrCofC);
-	free(VectorP);
-	#pragma acc exit data delete(CsrPtrC) detach(CsrPtrC)
-	#pragma acc exit data delete(CsrIndC) detach(CsrIndC)
-	#pragma acc exit data delete(CsrCofC) detach(CsrCofC)
-	#pragma acc exit data delete(VectorP) detach(VectorP)
-
 }
 
 
 
+static int MultiGridDepth;
+#pragma acc declare create(MultiGridDepth)
+
+static int (*MultiGridCellMin)[DIM]; // grid range for each grid layer
+static int (*MultiGridCellMax)[DIM];
+static int (*MultiGridCount)[DIM];
+#pragma acc declare create(MultiGridCellMin,MultiGridCellMax,MultiGridCount)
+
+static int  (*MultiGridOffset); //ここに何個目のGridからがiPowerの階層かを示す
+#pragma acc declare create(MultiGridOffset)
+
+static int TotalTopGridCount;
+static int TopGridCount[DIM];
+#pragma acc declare create(TotalTopGridCount,TopGridCount)
+
+#define GridId(iGX,iGY,iGZ,gridcount) \
+((gridcount[1]*gridcount[2])*(iGX)+(gridcount[2])*(iGY)+(iGZ))
+
+
+static double *InvDiagA;
+#pragma acc declare create(InvDiagA)
+
+static int     CsrNnzP2G;
+static int    *CsrPtrP2G;
+static int    *CsrIndP2G;
+static double *CsrCofP2G;
+#pragma acc declare create(CsrNnzP2G,CsrPtrP2G,CsrIndP2G,CsrCofP2G)
+
+static int     CsrNnzG2P;
+static int    *CsrPtrG2P;
+static int    *CsrIndG2P;
+static double *CsrCofG2P;
+#pragma acc declare create(CsrNnzG2P,CsrPtrG2P,CsrIndG2P,CsrCofG2P)
+
+
+#ifdef TWO_DIMENSIONAL
+#define offsetscale(power)  (((1<<(2*(power)))-1)/((1<<2)-1)) 
+#else //Not TWO_DIMENSIONAL (three dimensional)
+#define offsetscale(power)  (((1<<(3*(power)))-1)/((1<<3)-1))
+#endif
+
+#ifdef TWO_DIMENSIONAL
+#define POW_2_DIM (2*2)
+#define POW_3_DIM (3*3)
+#else
+#define POW_2_DIM (2*2*2)
+#define POW_3_DIM (3*3*3)
+#endif
+
+
+static int     OneGridSizeVec = DIM;
+static int     AllGridSizeVecS;
+static double  (*MultiGridVecS);
+#pragma acc declare create(MultiGridVecS)
+
+static int     AllGridSizeVecR;
+static double  (*MultiGridVecR);
+#pragma acc declare create(MultiGridVecR)
+
+static int     AllGridSizeVecQ;
+static double  (*MultiGridVecQ);
+#pragma acc declare create(MultiGridVecQ)
+
+static int     (*MultiGridCsrNnzA);
+static int     AllGridSizeCsrPtrA;
+static int     OneGridSizeCsrPtrA = DIM;
+static int     (*MultiGridCsrPtrA);
+static int     AllGridSizeCsrIndA;
+static int     OneGridSizeCsrIndA = DIM * DIM * POW_3_DIM;
+static int     (*MultiGridCsrIndA);
+static double  (*MultiGridCsrCofA);
+#pragma acc declare create(MultiGridCsrPtrA)
+#pragma acc declare create(MultiGridCsrIndA,MultiGridCsrCofA)
+
+static int     AllGridSizeInvDiagA;
+static int     OneGridSizeInvDiagA = DIM;
+static double  (*MultiGridInvDiagA);
+#pragma acc declare create(MultiGridInvDiagA)
+
+static int     (*MultiGridCsrNnzR);
+static int     AllGridSizeCsrPtrR;
+static int     OneGridSizeCsrPtrR = DIM;
+static int     (*MultiGridCsrPtrR);
+static int     AllGridSizeCsrIndR;
+static int     OneGridSizeCsrIndR = DIM * POW_2_DIM;
+static int     (*MultiGridCsrIndR);
+static double  (*MultiGridCsrCofR);
+#pragma acc declare create(MultiGridCsrPtrR)
+#pragma acc declare create(MultiGridCsrIndR,MultiGridCsrCofR)
+
+static int     (*MultiGridCsrNnzP);
+static int     AllGridSizeCsrPtrP;
+static int     OneGridSizeCsrPtrP = DIM * POW_2_DIM;
+static int     (*MultiGridCsrPtrP);
+static int     AllGridSizeCsrIndP;
+static int     OneGridSizeCsrIndP = DIM * POW_2_DIM;
+static int     (*MultiGridCsrIndP);
+static double  (*MultiGridCsrCofP);
+#pragma acc declare create(MultiGridCsrPtrP)
+#pragma acc declare create(MultiGridCsrIndP,MultiGridCsrCofP)
+
+static void calculateMultiGridDepth( void );
+static void allocateMultiGrid( void );
+static void calculateCsrP2G( void );
+static void calculateCsrG2P( void );
+static void calculateInvDiagA( void );
+static void calculateMultiGridCsrR( void );
+static void calculateMultiGridCsrP( void );
+static void calculateMultiGridCsrA( void );
+static void calculateMultiGridInvDiagA( void );
+
+static void checkMultiGridMatrix( void );
+
+
+static void calculateMultiGridMatrix( void ){
+	
+	calculateMultiGridDepth();
+	allocateMultiGrid();
+	calculateCsrP2G();
+	calculateCsrG2P();
+	calculateInvDiagA();
+	calculateMultiGridCsrR();
+	calculateMultiGridCsrP();
+	calculateMultiGridCsrA();
+	calculateMultiGridInvDiagA();
+	
+	// checkMultiGridMatrix();
+}
+
+
+static void calculateMultiGridDepth( void ){
+	
+	int iCXmax=0;
+	int iCYmax=0;
+	int iCZmax=0;
+	int iCXmin=CellCount[0];
+	int iCYmin=CellCount[1];
+	int iCZmin=CellCount[2];
+		
+	#pragma acc kernels copy(iCXmax,iCYmax,iCZmax,iCXmin,iCYmin,iCZmin) present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellCount[0:DIM])
+	#pragma acc loop reduction(max:iCXmax,iCYmax,iCZmax) reduction(min:iCXmin,iCYmin,iCZmin)
+	#pragma omp parallel for reduction (max:iCXmax,iCYmax,iCZmax) reduction(min:iCXmin,iCYmin,iCZmin)
+	for(int iC=0;iC<TotalCellCount;++iC){
+		if(CellFluidParticleEnd[iC]-CellFluidParticleBegin[iC]>0){
+			const int iCX=(iC/(CellCount[1]*CellCount[2]))%CellCount[0];
+			const int iCY=(iC/CellCount[2])%CellCount[1];
+			const int iCZ=iC%CellCount[2];
+			
+			if(iCXmax<iCX){iCXmax=iCX;}
+			if(iCYmax<iCY){iCYmax=iCY;}
+			if(iCZmax<iCZ){iCZmax=iCZ;}
+			if(iCXmin>iCX){iCXmin=iCX;}
+			if(iCYmin>iCY){iCYmin=iCY;}
+			if(iCZmin>iCZ){iCZmin=iCZ;}
+		}
+	}
+	
+	double maxGridWidth=0.0;
+	if(CellWidth*(iCXmax-iCXmin)>maxGridWidth){
+		maxGridWidth=CellWidth*(iCXmax-iCXmin+1);
+	}
+	if(CellWidth*(iCYmax-iCYmin)>maxGridWidth){
+		maxGridWidth=CellWidth*(iCYmax-iCYmin+1);
+	}
+	if(CellWidth*(iCZmax-iCZmin)>maxGridWidth){
+		maxGridWidth=CellWidth*(iCZmax-iCZmin+1);
+	}
+	
+	{
+		int iPower=0;
+		while((1<<iPower)*CellWidth <= maxGridWidth){
+			iPower++;
+		}
+		MultiGridDepth=iPower;
+	}
+//	#pragma acc update device(MultiGridDepth)
+	
+	MultiGridCellMin = (int (*)[DIM])malloc( MultiGridDepth*sizeof(int [DIM]) );
+	MultiGridCellMax = (int (*)[DIM])malloc( MultiGridDepth*sizeof(int [DIM]) );
+	MultiGridCount   = (int (*)[DIM])malloc( MultiGridDepth*sizeof(int [DIM]) );
+	#pragma acc enter data create(MultiGridCellMin[0:MultiGridDepth][0:DIM],MultiGridCellMax[0:MultiGridDepth][0:DIM],MultiGridCount[0:MultiGridDepth][0:DIM])
+	
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		MultiGridCellMin[iPower][0] = (iCXmin>>iPower);
+		MultiGridCellMin[iPower][1] = (iCYmin>>iPower);
+		MultiGridCellMin[iPower][2] = (iCZmin>>iPower);
+	}
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		MultiGridCellMax[iPower][0] = (iCXmax>>iPower)+1;
+		MultiGridCellMax[iPower][1] = (iCYmax>>iPower)+1;
+		MultiGridCellMax[iPower][2] = (iCZmax>>iPower)+1;
+	}
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		MultiGridCount[iPower][0] = MultiGridCellMax[iPower][0] - MultiGridCellMin[iPower][0];
+		MultiGridCount[iPower][1] = MultiGridCellMax[iPower][1] - MultiGridCellMin[iPower][1];
+		MultiGridCount[iPower][2] = MultiGridCellMax[iPower][2] - MultiGridCellMin[iPower][2];
+	}
+	#pragma acc update device(MultiGridCellMin[0:MultiGridDepth][0:DIM],MultiGridCellMax[0:MultiGridDepth][0:DIM],MultiGridCount[0:MultiGridDepth][0:DIM])
+	
+	MultiGridOffset = (int *)malloc( (MultiGridDepth+1)*sizeof(int) );
+	MultiGridOffset[MultiGridDepth-MultiGridDepth]=0;
+	for(int iPower=MultiGridDepth-1;iPower>=0;--iPower){
+		MultiGridOffset[MultiGridDepth-(iPower-1)-1] = MultiGridOffset[MultiGridDepth-iPower-1] + MultiGridCount[iPower][0]*MultiGridCount[iPower][1]*MultiGridCount[iPower][2];
+	}
+
+//	log_printf("line:%d, MultiGridDepth=%d\n", __LINE__, MultiGridDepth);
+//	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+//		log_printf("MultiGridCellMin[%d]=(%d,%d,%d)\n",iPower, MultiGridCellMin[iPower][0],MultiGridCellMin[iPower][1],MultiGridCellMin[iPower][2]);
+//		log_printf("MultiGridCellMax[%d]=(%d,%d,%d)\n",iPower, MultiGridCellMax[iPower][0],MultiGridCellMax[iPower][1],MultiGridCellMax[iPower][2]);
+//		log_printf("MultiGridCount[%d]  =(%d,%d,%d)\n",iPower, MultiGridCount[iPower][0],  MultiGridCount[iPower][1],  MultiGridCount[iPower][2]);
+//	}
+	
+}
+
+
+
+static void allocateMultiGrid( void ){ // MultiGridParticleCount, MultiInvD, MultiVecS, MultiVecR, MultiVecQ
+	
+	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
+	const int totalGridCount = MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+	
+	InvDiagA = (double *)malloc( DIM*fluidcount * sizeof(double) );
+	#pragma acc enter data create( InvDiagA[0:DIM*fluidcount] ) //attach(InvDiagA)
+	
+	CsrNnzP2G = DIM*fluidcount;
+	CsrPtrP2G = (int *)malloc( (DIM*totalGridCount+1) * sizeof(int) );
+	#pragma acc enter data create( CsrPtrP2G[0:DIM*totalGridCount+1] ) //attach(CsrPtrP2G)
+	CsrIndP2G = (int *)malloc( DIM*fluidcount * sizeof(int) );
+	#pragma acc enter data create( CsrIndP2G[0:DIM*fluidcount] ) //attach(CsrIndP2G)
+	CsrCofP2G = (double *)malloc( DIM*fluidcount * sizeof(double) );
+	#pragma acc enter data create( CsrCofP2G[0:DIM*fluidcount] ) //attach(CsrCofP2G)
+	
+	CsrNnzG2P = DIM*fluidcount;
+	CsrPtrG2P = (int *)malloc( (DIM*fluidcount+1) * sizeof(int) );
+	#pragma acc enter data create( CsrPtrG2P[0:DIM*fluidcount+1] ) //attach(CsrPtrG2P)
+	CsrIndG2P = (int *)malloc( DIM*fluidcount * sizeof(int) );
+	#pragma acc enter data create( CsrIndG2P[0:DIM*fluidcount] ) //attach(CsrIndG2P)
+	CsrCofG2P = (double *)malloc( DIM*fluidcount * sizeof(double) );
+	#pragma acc enter data create( CsrCofG2P[0:DIM*fluidcount] ) //attach(CsrCofG2P)
+	
+	AllGridSizeVecS = MultiGridOffset[MultiGridDepth]*OneGridSizeVec;
+	MultiGridVecS   = (double *)malloc( AllGridSizeVecS * sizeof(double) );
+	#pragma acc enter data create(MultiGridVecS[0:AllGridSizeVecS]) //attach(MultiGridVecS)
+	
+	AllGridSizeVecR = MultiGridOffset[MultiGridDepth]*OneGridSizeVec;
+	MultiGridVecR   = (double *)malloc( AllGridSizeVecR * sizeof(double) );
+	#pragma acc enter data create(MultiGridVecR[0:AllGridSizeVecR]) //attach(MultiGridVecR)
+	
+	AllGridSizeVecQ = MultiGridOffset[MultiGridDepth]*OneGridSizeVec;
+	MultiGridVecQ   = (double *)malloc( AllGridSizeVecQ * sizeof(double) );
+	#pragma acc enter data create(MultiGridVecQ[0:AllGridSizeVecQ]) //attach(MultiGridVecQ)
+	
+	
+	MultiGridCsrNnzA = (int *)malloc( MultiGridDepth * sizeof(int) );
+	AllGridSizeCsrPtrA = MultiGridOffset[MultiGridDepth]*OneGridSizeCsrPtrA + (MultiGridDepth);
+	MultiGridCsrPtrA   = (int *)malloc( AllGridSizeCsrPtrA * sizeof(int) );
+	#pragma acc enter data create(MultiGridCsrPtrA[0:AllGridSizeCsrPtrA]) //attach(MultiGridCsrPtrA)
+	AllGridSizeCsrIndA = MultiGridOffset[MultiGridDepth]*OneGridSizeCsrIndA;
+	MultiGridCsrIndA   = (int *)malloc( AllGridSizeCsrIndA * sizeof(int) );
+	#pragma acc enter data create(MultiGridCsrIndA[0:AllGridSizeCsrIndA]) //attach(MultiGridCsrIndA)
+	MultiGridCsrCofA   = (double *)malloc( AllGridSizeCsrIndA * sizeof(double) );
+	#pragma acc enter data create(MultiGridCsrCofA[0:AllGridSizeCsrIndA]) //attach(MultiGridCsrCofA)
+	
+	AllGridSizeInvDiagA = MultiGridOffset[MultiGridDepth]*OneGridSizeInvDiagA;
+	MultiGridInvDiagA   = (double *)malloc( AllGridSizeInvDiagA * sizeof(double) );
+	#pragma acc enter data create(MultiGridInvDiagA[0:AllGridSizeInvDiagA]) //attach(MultiGridInvDiagA)
+	
+	MultiGridCsrNnzR = (int *)malloc( MultiGridDepth * sizeof(int) );
+	AllGridSizeCsrPtrR = MultiGridOffset[MultiGridDepth-1]*OneGridSizeCsrPtrR + (MultiGridDepth-1);
+	MultiGridCsrPtrR   = (int *)malloc( AllGridSizeCsrPtrR * sizeof(int) );
+	#pragma acc enter data create(MultiGridCsrPtrR[0:AllGridSizeCsrPtrR])// attach(MultiGridCsrPtrR)
+	AllGridSizeCsrIndR = MultiGridOffset[MultiGridDepth-1]*OneGridSizeCsrIndR;
+	MultiGridCsrIndR   = (int *)malloc( AllGridSizeCsrIndR * sizeof(int) );
+	#pragma acc enter data create(MultiGridCsrIndR[0:AllGridSizeCsrIndR])// attach(MultiGridCsrIndR)
+	MultiGridCsrCofR   = (double *)malloc( AllGridSizeCsrIndR * sizeof(double) );
+	#pragma acc enter data create(MultiGridCsrCofR[0:AllGridSizeCsrIndR])// attach(MultiGridCsrCofR)
+	
+	MultiGridCsrNnzP = (int *)malloc( MultiGridDepth * sizeof(int) );
+	AllGridSizeCsrPtrP = MultiGridOffset[MultiGridDepth-1]*OneGridSizeCsrPtrP + (MultiGridDepth-1);
+	MultiGridCsrPtrP   = (int *)malloc( AllGridSizeCsrPtrP * sizeof(int) );
+	#pragma acc enter data create(MultiGridCsrPtrP[0:AllGridSizeCsrPtrP]) //attach(MultiGridCsrPtrP)
+	AllGridSizeCsrIndP = MultiGridOffset[MultiGridDepth-1]*OneGridSizeCsrIndP;
+	MultiGridCsrIndP   = (int *)malloc( AllGridSizeCsrIndP * sizeof(int) );
+	#pragma acc enter data create(MultiGridCsrIndP[0:AllGridSizeCsrIndP]) //attach(MultiGridCsrIndP)
+	MultiGridCsrCofP   = (double *)malloc( AllGridSizeCsrIndP * sizeof(double) );
+	#pragma acc enter data create(MultiGridCsrCofP[0:AllGridSizeCsrIndP]) //attach(MultiGridCsrCofP)
+	
+}
+
+
+
+static void calculateCsrP2G( void ){
+	
+	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
+	const int iPower=0;
+	const int *gridCellMin = MultiGridCellMin[iPower];
+	const int *gridCellMax = MultiGridCellMax[iPower];
+	const int *gridCount   = MultiGridCount[iPower];
+	const int totalGridCount = gridCount[0]*gridCount[1]*gridCount[2];
+	
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<DIM*totalGridCount+1;++iRow){
+		CsrPtrP2G[iRow]=-1*__LINE__;
+	}
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iNonzero=0;iNonzero<CsrNnzP2G;++iNonzero){
+		CsrIndP2G[iNonzero]=-1*__LINE__;
+		CsrCofP2G[iNonzero]=-1.0*__LINE__;
+	}
+	
+	#pragma acc kernels present(gridCount[0:DIM],gridCellMin[0:DIM]) present(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CsrPtrP2G[0:DIM*totalGridCount+1],CsrIndP2G[0:DIM*fluidcount], CsrCofP2G[0:DIM*fluidcount])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iG=0;iG<totalGridCount;++iG){
+		const int iGX = (iG/(gridCount[1]*gridCount[2])) % gridCount[0];
+		const int iGY = (iG/(gridCount[2])) % gridCount[1];
+		const int iGZ =  iG % gridCount[2];
+		const int iCX = iGX + gridCellMin[0];
+		const int iCY = iGY + gridCellMin[1];
+		const int iCZ = iGZ + gridCellMin[2];
+		
+		const int iC = CellId(iCX,iCY,iCZ);
+		const int ptr = CellFluidParticleBegin[iC];
+		const int count = CellFluidParticleEnd[iC]-CellFluidParticleBegin[iC];
+		
+		#pragma acc loop seq
+		for(int rD=0;rD<DIM;++rD){
+			CsrPtrP2G[DIM*iG+rD] = ptr*DIM+count*rD;
+		}
+		if(iG==totalGridCount-1){
+			CsrPtrP2G[DIM*totalGridCount]=CellFluidParticleEnd[iC]*DIM;
+		}
+		
+		if( count==0 )continue;
+		#pragma acc loop seq
+		for(int jP=CellFluidParticleBegin[iC];jP<CellFluidParticleEnd[iC];++jP){
+			#pragma acc loop seq
+			for(int rD=0;rD<DIM;++rD){
+				const int iRow=DIM*iG+rD;
+				const int jColumn=DIM*jP+rD;
+				const int jCP = jP-CellFluidParticleBegin[iC];
+				const int iNonzero=CsrPtrP2G[iRow]+jCP;
+				CsrIndP2G[iNonzero]=jColumn;
+				CsrCofP2G[iNonzero]=1.0;
+			}
+		}
+	}
+}
+
+
+static void calculateCsrG2P( void ){
+	
+	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
+	const int iPower=0;
+	const int *gridCellMin = MultiGridCellMin[iPower];
+	const int *gridCellMax = MultiGridCellMax[iPower];
+	const int *gridCount   = MultiGridCount[iPower];
+	const int totalGridCount = gridCount[0]*gridCount[1]*gridCount[2];
+	
+	#pragma acc kernels present(gridCount[0:DIM],gridCellMin[0:DIM]) present(CellCount[0:DIM],CsrPtrG2P[0:DIM*fluidcount+1],CsrIndG2P[0:CsrNnzG2P],CsrCofG2P[0:CsrNnzG2P])
+	#pragma acc loop independent 
+	#pragma omp parallel for 
+	for(int iP=0;iP<fluidcount;++iP){
+		const int iC=CellIndex[iP];
+		const int iCX = iC/(CellCount[1]*CellCount[2])%CellCount[0];
+		const int iCY = iC/(CellCount[2])%CellCount[1];
+		const int iCZ = iC%CellCount[2];
+		const int iGX = iCX-gridCellMin[0];
+		const int iGY = iCY-gridCellMin[1];
+		const int iGZ = iCZ-gridCellMin[2];
+		const int iG=GridId(iGX,iGY,iGZ,gridCount);
+		const int count = CellFluidParticleEnd[iC]-CellFluidParticleBegin[iC];
+		
+		#pragma acc loop seq
+		for(int rD=0;rD<DIM;++rD){
+			const int iRow = DIM*iP+rD;
+			CsrPtrG2P[iRow]=DIM*iP+rD;
+		}
+		if(iP==fluidcount-1){
+			const int iRow = DIM*fluidcount;
+			CsrPtrG2P[iRow] = DIM*fluidcount;
+			//assert( CsrPtrG2P[iRow]==GsrNnzG2P );
+		}
+		#pragma acc loop seq
+		for(int rD=0;rD<DIM;++rD){
+			const int iRow=DIM*iP+rD;
+			const int iColumn=DIM*iG+rD;
+			const int iNonzero=CsrPtrG2P[iRow]+0;
+			CsrIndG2P[iNonzero]=iColumn;
+			CsrCofG2P[iNonzero]=1.0;
+		}
+	}
+}
+
+static void calculateInvDiagA( void ){
+	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
+	const int N = DIM*(fluidcount);
+	
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<N;++iRow){
+		InvDiagA[iRow] = 0.0;
+	}
+	
+	#pragma acc kernels present(InvDiagA[0:N], CsrPtrA[0:N+1],CsrIndA[0:NonzeroCountA],CsrCofA[0:NonzeroCountA])
+	#pragma acc loop independent
+	#pragma omp parallel for 
+	for(int iRow=0;iRow<N;++iRow){
+		#pragma acc loop seq
+		for(int iNonzero=CsrPtrA[iRow];iNonzero<CsrPtrA[iRow+1];++iNonzero){
+			if(CsrIndA[iNonzero]==iRow){
+				if(CsrCofA[iNonzero]!=0.0){
+					InvDiagA[iRow] = 1.0/CsrCofA[iNonzero];
+				}
+			}
+		}
+	}
+}
+
+static void calculateMultiGridCsrR( void ){
+	
+	
+	for(int iPower=1;iPower<MultiGridDepth;++iPower){
+		const int *gridCount =MultiGridCount[iPower-1];
+		MultiGridCsrNnzR[iPower] = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+	}
+	
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<AllGridSizeCsrPtrR;++iRow){
+		MultiGridCsrPtrR[iRow]=-1*__LINE__;
+	}
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iNonzero=0;iNonzero<AllGridSizeCsrIndR;++iNonzero){
+		MultiGridCsrIndR[iNonzero]=-1*__LINE__;
+		MultiGridCsrCofR[iNonzero]=-1.0*__LINE__;
+	}
+	
+	for(int iPower=1;iPower<MultiGridDepth;++iPower){
+		const int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1) ;
+		const int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndR;
+		const int *gridCellMinL     = MultiGridCellMin[iPower];
+		const int *gridCellMaxL     = MultiGridCellMax[iPower];
+		const int *gridCountL       = MultiGridCount[iPower];
+		const int *gridCellMinS     = MultiGridCellMin[iPower-1];
+		const int *gridCellMaxS     = MultiGridCellMax[iPower-1];
+		const int *gridCountS       = MultiGridCount[iPower-1];
+		const int NRow = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		const int nnz = MultiGridCsrNnzR[iPower];
+		int    *csrPtrR = &MultiGridCsrPtrR[offsetPtr];
+		int    *csrIndR = &MultiGridCsrIndR[offsetInd];
+		double *csrCofR = &MultiGridCsrCofR[offsetInd];
+		
+		#pragma acc kernels present(                                   \
+			gridCellMinL[0:DIM],gridCellMaxL[0:DIM],gridCountL[0:DIM], \
+			gridCellMinS[0:DIM],gridCellMaxS[0:DIM],gridCountS[0:DIM], \
+			csrPtrR[0:NRow+1],csrIndR[0:nnz],csrCofR[0:nnz]            \
+		)
+		#pragma acc loop independent
+		#pragma omp parallel for 
+		for(int iRow=0;iRow<NRow;++iRow){
+			const int iLGX = (iRow/(DIM*gridCountL[1]*gridCountL[2])) % gridCountL[0];
+			const int iLGY = (iRow/(DIM*gridCountL[2])) % gridCountL[1];
+			const int iLGZ = (iRow/DIM) % gridCountL[2];
+			const int rD   =  iRow % DIM;
+			
+			const int gmX = ( (gridCellMinS[0]>2*gridCellMinL[0]) ? 1:0 );
+			const int gmY = ( (gridCellMinS[1]>2*gridCellMinL[1]) ? 1:0 );
+			const int gmZ = ( (gridCellMinS[2]>2*gridCellMinL[2]) ? 1:0 );
+			const int gMX = ( (gridCellMaxS[0]<2*gridCellMaxL[0]) ? 1:0 );
+			const int gMY = ( (gridCellMaxS[1]<2*gridCellMaxL[1]) ? 1:0 );
+			const int gMZ = ( (gridCellMaxS[2]<2*gridCellMaxL[2]) ? 1:0 );
+			const int iLCX = iLGX + gridCellMinL[0];
+			const int iLCY = iLGY + gridCellMinL[1];
+			const int iLCZ = iLGZ + gridCellMinL[2];
+			const int fmX = ( (gridCellMinS[0]>2*iLCX) ? 1:0 );
+			const int fmY = ( (gridCellMinS[1]>2*iLCY) ? 1:0 );
+			const int fmZ = ( (gridCellMinS[2]>2*iLCZ) ? 1:0 );
+			const int fMX = ( (gridCellMaxS[0]<2*(iLCX+1)) ? 1:0 );
+			const int fMY = ( (gridCellMaxS[1]<2*(iLCY+1)) ? 1:0 );
+			const int fMZ = ( (gridCellMaxS[2]<2*(iLCZ+1)) ? 1:0 );
+			const int wX = gridCountS[0]; 
+			const int wY = gridCountS[1];
+			const int wZ = gridCountS[2];
+			const int sX = 2*iLGX-gmX+fmX;
+			const int sY = 2*iLGY-gmY+fmY;
+			const int sZ = 2*iLGZ-gmZ+fmZ;
+			const int cX = 2-fmX-fMX;
+			const int cY = 2-fmY-fMY;
+			const int cZ = 2-fmZ-fMZ;
+			
+			csrPtrR[ iRow ] = DIM*(wZ*wY*sX+wZ*sY*cX+sZ*cY*cX)+rD*cZ*cY*cX;
+			
+			if(iRow==NRow-1){
+				const int iRow_end = NRow;
+				csrPtrR[ iRow_end ] = DIM*wZ*wY*wX;
+				// assert(MultiGridCsrPtrR[ offsetPtr +iRow_end ]==MultiGridCsrNnzR[iPower]);
+			}
+			
+			#pragma acc loop seq
+			for(int iX=0;iX<cX;++iX)
+			#pragma acc loop seq
+			for(int iY=0;iY<cY;++iY)
+			#pragma acc loop seq
+			for(int iZ=0;iZ<cZ;++iZ)
+			{
+				const int dX = iX+fmX;
+				const int dY = iY+fmY;
+				const int dZ = iZ+fmZ;
+				const int iSGX=(2*iLCX+dX)-gridCellMinS[0];
+				const int iSGY=(2*iLCY+dY)-gridCellMinS[1];
+				const int iSGZ=(2*iLCZ+dZ)-gridCellMinS[2];;
+				const int iSG=GridId(iSGX,iSGY,iSGZ,gridCountS);
+				const int shift = cZ*cY*(dX-fmX)+cZ*(dY-fmY)+(dZ-fmZ);
+				
+				const int iColumn = DIM*iSG+rD;
+				const int iNonzero = csrPtrR[ iRow ] + shift;
+				csrIndR[ iNonzero ] = iColumn;
+				csrCofR[ iNonzero ] = 1.0;
+			}
+		}
+	}
+}
+
+static void calculateMultiGridCsrP( void ){
+	
+	for(int iPower=1;iPower<MultiGridDepth;++iPower){
+		const int *gridCount =MultiGridCount[iPower-1];
+		MultiGridCsrNnzP[iPower] = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+	}
+	
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for 
+	for(int iRow=0;iRow<AllGridSizeCsrPtrP;++iRow){
+		MultiGridCsrPtrP[iRow]=-1*__LINE__;
+	}
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for 
+	for(int iNonzero=0;iNonzero<AllGridSizeCsrIndP;++iNonzero){
+		MultiGridCsrIndP[iNonzero]=-1*__LINE__;
+		MultiGridCsrCofP[iNonzero]=-1.0*__LINE__;
+	}
+	
+	for(int iPower=MultiGridDepth-1;iPower>0;iPower--){
+		const int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+		const int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndP;
+		const int *gridCellMinL     = MultiGridCellMin[iPower];
+		const int *gridCellMinS     = MultiGridCellMin[iPower-1];
+		const int *gridCountL       = MultiGridCount[iPower];
+		const int *gridCountS       = MultiGridCount[iPower-1];
+		const int NRow = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+		const int nnz = MultiGridCsrNnzP[iPower];
+		int    *csrPtrP = &MultiGridCsrPtrP[offsetPtr];
+		int    *csrIndP = &MultiGridCsrIndP[offsetInd];
+		double *csrCofP = &MultiGridCsrCofP[offsetInd];
+		
+		#pragma acc kernels present(gridCellMinL[0:DIM],gridCellMinS[0:DIM],gridCountL[0:DIM],gridCountS[0:DIM]) present(csrPtrP[0:NRow+1],csrIndP[0:nnz],csrCofP[0:nnz])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iRow=0;iRow<NRow;++iRow){
+			const int iSGX = (iRow/(DIM*gridCountS[1]*gridCountS[2])) % gridCountS[0];
+			const int iSGY = (iRow/(DIM*gridCountS[2])) % gridCountS[1];
+			const int iSGZ = (iRow/DIM) % gridCountS[2];
+			const int rD   =  iRow % DIM;
+			csrPtrP[ iRow ] = iRow;
+			
+			if( iRow==NRow-1 ){
+				const int iRow_end = NRow;
+				csrPtrP[ iRow_end ] = iRow_end;
+				// assert(MultiGridCsrPtrP[ offsetPtr +iRow_end ]==MultiGridCsrNnzP[iPower]);
+			}
+			const int iSCX = iSGX+gridCellMinS[0];
+			const int iSCY = iSGY+gridCellMinS[1];
+			const int iSCZ = iSGZ+gridCellMinS[2];
+			
+			const int iLGX = (iSCX/2)-gridCellMinL[0];
+			const int iLGY = (iSCY/2)-gridCellMinL[1];
+			const int iLGZ = (iSCZ/2)-gridCellMinL[2];
+			const int iLG = GridId(iLGX,iLGY,iLGZ,gridCountL);
+			const int iColumn = DIM*iLG+rD;
+			const int iNonzero = csrPtrP[ iRow ] +0;
+			csrIndP[ iNonzero ]=iColumn;
+			csrCofP[ iNonzero ]=1.0;
+			
+		}
+	}
+}
+
+static void calculateMultiGridCsrA( void ){
+	const int dimension = 2;
+	
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		const int *gridCount = MultiGridCount[iPower];
+		const int cX  = ( 3<gridCount[0] ? 3:gridCount[0] );
+		const int cY  = ( 3<gridCount[1] ? 3:gridCount[1] );
+		const int cZ  = ( 3<gridCount[2] ? 3:gridCount[2] );
+		const int wX = cX*gridCount[0];
+		const int wY = cY*gridCount[1];
+		const int wZ = cZ*gridCount[2];
+		MultiGridCsrNnzA[iPower]=DIM*DIM * wX*wY*wZ;
+	}
+	
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for 
+	for(int iRow=0;iRow<AllGridSizeCsrPtrA;++iRow){
+		MultiGridCsrPtrA[iRow]=-1*__LINE__;
+	}
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for 
+	for(int iNonzero=0;iNonzero<AllGridSizeCsrIndA;++iNonzero){
+		MultiGridCsrIndA[iNonzero]=-1*__LINE__;
+		MultiGridCsrCofA[iNonzero]=-1.0*__LINE__;
+	}
+	
+	
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		const int offsetPtrL = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+		const int offsetIndL = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+		const int *gridCountL       = MultiGridCount[iPower];
+		const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		const int nnzL = MultiGridCsrNnzA[iPower];
+		int    *csrPtrAL = &MultiGridCsrPtrA[offsetPtrL];
+		int    *csrIndAL=&MultiGridCsrIndA[offsetIndL];
+		double *csrCofAL=&MultiGridCsrCofA[offsetIndL];
+		
+		#pragma acc kernels present(gridCountL[0:DIM]) present(csrPtrAL[0:NL+1],csrIndAL[0:nnzL],csrCofAL[0:nnzL])
+		#pragma acc loop independent //collapse(4)
+		#pragma omp parallel for //collapse(4)
+		for(int iRowL=0;iRowL<NL;++iRowL){
+			const int iLGX = (iRowL/(DIM*gridCountL[1]*gridCountL[2])) % gridCountL[0];
+			const int iLGY = (iRowL/(DIM*gridCountL[2])) % gridCountL[1];
+			const int iLGZ = (iRowL/DIM) % gridCountL[2];
+			const int rD   =  iRowL % DIM;
+			
+			const int cX  = ( 3<gridCountL[0] ? 3:gridCountL[0] );
+			const int cY  = ( 3<gridCountL[1] ? 3:gridCountL[1] );
+			const int cZ  = ( 3<gridCountL[2] ? 3:gridCountL[2] );
+			const int wX  = cX*gridCountL[0];
+			const int wY  = cY*gridCountL[1];
+			const int wZ  = cZ*gridCountL[2];
+			const int sX  = cX*iLGX;
+			const int sY  = cY*iLGY;
+			const int sZ  = cZ*iLGZ;
+			
+			csrPtrAL[ iRowL ] = DIM*(DIM*( wZ*wY*sX + wZ*sY*cX + sZ*cY*cX ) + rD*( cZ*cY*cX )); // DIM*POW_3_DIM*iRowL;
+			
+			if(iRowL==NL-1){ 
+				const int iRowL_end = NL;
+				csrPtrAL[ iRowL_end ] = DIM*DIM * wZ*wY*wX;
+				// assert(MultiGridCsrPtrA[ offsetPtrL +iRowL_end ]==MultiGridCsrNnzA[iPower]);
+			}
+			#pragma acc loop seq
+			for(int iX=0;iX<cX;++iX)
+			#pragma acc loop seq
+			for(int iY=0;iY<cY;++iY)
+			#pragma acc loop seq
+			for(int iZ=0;iZ<cZ;++iZ){
+				#pragma acc loop seq
+				for(int sD=0;sD<DIM;++sD){
+					const int shift = DIM*( cZ*cY*iX + cZ*iY + iZ ) +sD; 
+					const int iNonzeroL = csrPtrAL[ iRowL ] + shift;
+					const int dLGX = iX-1;
+					const int dLGY = iY-1;
+					const int dLGZ = iZ-1;
+					int jLGX = (iLGX + dLGX + gridCountL[0])%gridCountL[0];
+					int jLGY = (iLGY + dLGY + gridCountL[1])%gridCountL[1];
+					int jLGZ = (iLGZ + dLGZ + gridCountL[2])%gridCountL[2];
+					const int jLG=GridId(jLGX,jLGY,jLGZ,gridCountL);
+					// assert( shift == DIM*(cZ*cY*(dLGX+1-fmX)+cZ*(dLGY+1-fmY)+(dLGZ+1-fmZ))+sD );
+					const int iColumnL = DIM*jLG+sD;
+					csrIndAL[ iNonzeroL ] = iColumnL;
+					csrCofAL[ iNonzeroL ] = 1.0*__LINE__;
+				}
+			}
+		}
+	}
+	
+	{
+		const int iPower=0;
+		const int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+		const int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+		const int *gridCellMin = MultiGridCellMin[iPower];
+		const int *gridCount = MultiGridCount[iPower];
+		const int NG = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
+		const int nnzG = MultiGridCsrNnzA[iPower];
+		int    *csrPtrAG = &MultiGridCsrPtrA[offsetPtr];
+		double *csrCofAG = &MultiGridCsrCofA[offsetInd];
+		
+		#pragma acc kernels present(gridCellMin[0:DIM],gridCount[0:DIM],csrPtrAG[0:NG+1],csrCofAG[0:nnzG], CsrPtrA[0:NP+1],CsrIndA[0:NonzeroCountA],CsrCofA[0:NonzeroCountA],CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellIndex[0:ParticleCount],CellCount[0:DIM],gridCellMin[0:DIM])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iRowG=0;iRowG<NG;++iRowG){
+			const int iGX = (iRowG/(DIM*gridCount[1]*gridCount[2])) % gridCount[0];
+			const int iGY = (iRowG/(DIM*gridCount[2])) % gridCount[1];
+			const int iGZ = (iRowG/DIM) % gridCount[2];
+			const int rD  = iRowG % DIM;
+			
+			const int cX  = ( 3<gridCount[0] ? 3:gridCount[0] );
+			const int cY  = ( 3<gridCount[1] ? 3:gridCount[1] );
+			const int cZ  = ( 3<gridCount[2] ? 3:gridCount[2] );
+			
+			double cofRowG[DIM*POW_3_DIM];
+			#pragma acc loop seq
+			for(int shift=0;shift<DIM*POW_3_DIM;++shift){
+				cofRowG[shift]=0.0;
+			}
+			
+			const int iCX = iGX + gridCellMin[0];
+			const int iCY = iGY + gridCellMin[1];
+			const int iCZ = iGZ + gridCellMin[2];
+			if(!(iCX<CellCount[0] && iCY<CellCount[1] && iCZ<CellCount[2]))continue;
+			const int iC=CellId(iCX,iCY,iCZ);
+			
+			#pragma acc loop seq
+			for(int iP=CellFluidParticleBegin[iC];iP<CellFluidParticleEnd[iC];++iP){
+				const int iRowP=DIM*iP+rD;				
+				#pragma acc loop seq
+				for(int iNonzeroP=CsrPtrA[iRowP];iNonzeroP<CsrPtrA[iRowP+1];++iNonzeroP){
+					const int iColumnP =CsrIndA[iNonzeroP];
+					const int jP = iColumnP/DIM;
+					const int sD = iColumnP%DIM;
+					const int jCX=(CellIndex[jP]/(CellCount[1]*CellCount[2]))%TotalCellCount;
+					const int jCY=(CellIndex[jP]/CellCount[2])%CellCount[1];
+					const int jCZ=CellIndex[jP]%CellCount[2];
+					const int jGX = jCX - gridCellMin[0];
+					const int jGY = jCY - gridCellMin[1];
+					const int jGZ = jCZ - gridCellMin[2];
+					const int dGX = jGX-iGX;
+					const int dGY = jGY-iGY;
+					const int dGZ = jGZ-iGZ;
+					const int iX = (dGX+1+gridCount[0])%gridCount[0];
+					const int iY = (dGY+1+gridCount[1])%gridCount[1];
+					const int iZ = (dGZ+1+gridCount[2])%gridCount[2];
+					const int shift = DIM*(cZ*cY*iX+cZ*iY+iZ)+sD;
+					
+					#ifndef _OPENACC
+					 const int iNonzeroG = csrPtrAG[ iRowG ] + shift;
+					 const int jG  = GridId(jGX,jGY,jGZ,gridCount);
+					 const int iColumnG = DIM*jG+sD;
+					 assert( MultiGridCsrIndA[ offsetInd + iNonzeroG ] == iColumnG );
+					#endif
+					
+					cofRowG[shift] += CsrCofA[iNonzeroP];
+				}
+			}
+			#pragma acc loop seq
+			for(int shift=0;shift<(DIM*cZ*cY*cX);++shift){
+				const int iNonzeroG = csrPtrAG[ iRowG ] + shift;
+				csrCofAG[ iNonzeroG ] = cofRowG[shift];
+			}
+		}
+	}
+	
+	
+	for(int iPower=1;iPower<MultiGridDepth;++iPower){
+		const int offsetPtrL = MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-(iPower  )-1);
+		const int offsetPtrS = MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeCsrPtrA + (MultiGridDepth-(iPower-1)-1);
+		const int offsetIndL = MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+		const int offsetIndS = MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeCsrIndA;
+		const int offsetPtrR = MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-(iPower  )-1);
+		const int offsetIndR = MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
+		const int *gridCellMinL     = MultiGridCellMin[iPower];
+		const int *gridCellMinS     = MultiGridCellMin[iPower-1];
+		const int *gridCountL = MultiGridCount[iPower];
+		const int *gridCountS = MultiGridCount[iPower-1];
+		const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+		const int nnzL = MultiGridCsrNnzA[iPower];
+		const int nnzS = MultiGridCsrNnzA[iPower-1];		
+		int    *csrPtrAL = &MultiGridCsrPtrA[offsetPtrL];
+		int    *csrPtrAS = &MultiGridCsrPtrA[offsetPtrS];
+		double *csrCofAL=&MultiGridCsrCofA[offsetIndL];
+		double *csrCofAS=&MultiGridCsrCofA[offsetIndS];
+		int    *csrIndAS=&MultiGridCsrIndA[offsetIndS];
+		int    *csrPtrR =&MultiGridCsrPtrR[offsetPtrR];
+		int    *csrIndR =&MultiGridCsrIndR[offsetIndR];
+		
+		#pragma acc kernels present(                   \
+			gridCellMinL[0:DIM], gridCellMinS[0:DIM],  \
+			gridCountL[0:DIM],gridCountS[0:DIM],       \
+			csrPtrAL[0:NL+1],csrPtrAS[0:NS+1],         \
+			csrCofAL[0:nnzL],csrCofAS[0:nnzS],         \
+			csrIndAS[0:nnzS],                          \
+			csrPtrR[0:NL+1], csrIndR[0:NS]             \
+		)
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iRowL=0;iRowL<NL;++iRowL){
+			const int iLGX = (iRowL/(DIM*gridCountL[1]*gridCountL[2])) % gridCountL[0];
+			const int iLGY = (iRowL/(DIM*gridCountL[2])) % gridCountL[1];
+			const int iLGZ = (iRowL/DIM) % gridCountL[2];
+			const int rD   =  iRowL % DIM;
+			
+			const int cX  = ( 3<gridCountL[0] ? 3:gridCountL[0] );
+			const int cY  = ( 3<gridCountL[1] ? 3:gridCountL[1] );
+			const int cZ  = ( 3<gridCountL[2] ? 3:gridCountL[2] );
+			
+			double cofRowL[DIM*POW_3_DIM];
+			#pragma acc loop seq
+			for(int shiftL=0;shiftL<DIM*POW_3_DIM;++shiftL){
+				cofRowL[shiftL]=0.0;
+			}
+			
+			for(int iNonzeroR=csrPtrR[iRowL];iNonzeroR<csrPtrR[iRowL+1];++iNonzeroR){
+				const int iRowS = csrIndR[iNonzeroR];
+				
+				
+				#pragma acc loop seq
+				for(int iNonzeroS=csrPtrAS[iRowS];iNonzeroS<csrPtrAS[iRowS+1];++iNonzeroS){
+					const int iColumnS =csrIndAS[iNonzeroS];
+					const int jSGX = (iColumnS/(DIM*gridCountS[1]*gridCountS[2])) % gridCountS[0];
+					const int jSGY = (iColumnS/(DIM*gridCountS[2])) % gridCountS[1];
+					const int jSGZ = (iColumnS/DIM) % gridCountS[2];
+					const int sD   =  iColumnS % DIM;
+					
+					const int jSCX = jSGX + gridCellMinS[0];
+					const int jSCY = jSGY + gridCellMinS[1];
+					const int jSCZ = jSGZ + gridCellMinS[2];
+					const int jLGX = (jSCX/2) - gridCellMinL[0];
+					const int jLGY = (jSCY/2) - gridCellMinL[1];
+					const int jLGZ = (jSCZ/2) - gridCellMinL[2];
+					const int dLGX = jLGX - iLGX;
+					const int dLGY = jLGY - iLGY;
+					const int dLGZ = jLGZ - iLGZ;
+					const int iX = (dLGX+1+gridCountL[0])%gridCountL[0];
+					const int iY = (dLGY+1+gridCountL[1])%gridCountL[1];
+					const int iZ = (dLGZ+1+gridCountL[2])%gridCountL[2];
+					const int shiftL = DIM*(cZ*cY*iX+cZ*iY+iZ)+sD;
+					
+					#ifndef _OPENACC
+					const int iNonzeroL = csrPtrAL[ iRowL ] + shiftL;
+					const int jLG = GridId(jLGX,jLGY,jLGZ,gridCountL);
+					const int iColumnL = DIM*jLG+sD;
+					assert(MultiGridCsrIndA[ offsetIndL + iNonzeroL ]==iColumnL);
+					#endif
+					
+					cofRowL[ shiftL ] += csrCofAS[ iNonzeroS ];
+				}					
+			}
+			
+			#pragma acc loop seq
+			for(int shiftL=0;shiftL<(DIM*cZ*cY*cX);++shiftL){
+				const int iNonzeroL = csrPtrAL[ iRowL ] + shiftL;
+				csrCofAL[ iNonzeroL ] = cofRowL[ shiftL ];
+			}
+			
+		}
+	}
+}
+
+static void calculateMultiGridInvDiagA( void ){
+	
+	#pragma acc kernels 
+	#pragma acc loop independent
+	#pragma omp parallel for 
+	for(int iRow=0;iRow<AllGridSizeInvDiagA;++iRow){
+		MultiGridInvDiagA[iRow]=-1.0*__LINE__;
+	}
+	
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		const int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+		const int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+		const int offsetInvDiagA = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+		const int *gridCount = MultiGridCount[iPower];
+		const int N    = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		const int nnzA = MultiGridCsrNnzA[iPower];
+		int    *csrPtrA = &MultiGridCsrPtrA[offsetPtr];
+		double *csrCofA = &MultiGridCsrCofA[offsetInd];
+		double *invDiagA= &MultiGridInvDiagA[offsetInvDiagA];
+		
+		#pragma acc kernels present(gridCount[0:DIM]) present(csrPtrA[0:N+1],csrCofA[0:nnzA],invDiagA[0:N])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iRow=0;iRow<N;++iRow){
+			double sumCof=0.0;
+			for(int iNonzero=csrPtrA[iRow];iNonzero<csrPtrA[iRow+1];++iNonzero){
+				sumCof+=abs(csrCofA[iNonzero]);
+			}
+			if(sumCof!=0.0){
+				invDiagA[iRow] = 2.0/sumCof;
+			}
+			else{
+				invDiagA[iRow] = 0.0;
+			}
+		}
+	}
+}
+
+
+
+static void allocateDenssMat(const int N, const int M, double (**&mat)){
+	mat = (double **)malloc( N * sizeof(double *) );
+	for(int iRow=0;iRow<N;++iRow){
+		mat[iRow]=(double *)malloc( M * sizeof(double) );
+	}
+}
+
+static void setDenssMat(const int N, const int M, const int nnz, const int *csrptr, const int *csrind, const double *csrcof, double **mat){
+			fprintf(stderr,"line:%d\n",__LINE__);
+
+	for(int iRow=0;iRow<N;++iRow){
+		for(int iColumn=0;iColumn<M;++iColumn){
+			mat[iRow][iColumn]=0.0;
+		}
+	}
+		fprintf(stderr,"line:%d\n",__LINE__);
+
+	for(int iRow=0;iRow<N;++iRow){
+		for(int iNonzero=csrptr[iRow];iNonzero<csrptr[iRow+1];++iNonzero){
+			const int iColumn = csrind[iNonzero];
+			mat[iRow][iColumn] += csrcof[iNonzero];
+		}
+	}
+			fprintf(stderr,"line:%d\n",__LINE__);
+
+}
+
+static void writeDenssMat(const int N, const int M, double **mat, const char *filename){
+	FILE *fp=fopen(filename,"w");
+	for(int iRow=0;iRow<N;++iRow){
+		for(int iColumn=0;iColumn<M;++iColumn){
+			fprintf(fp,"%e,",mat[iRow][iColumn]);
+		}
+		fprintf(fp,"\n");
+	}
+	fclose(fp);
+}
+
+static void freeDenssMat(const int N, const int M, double **mat){
+	for(int iRow=0;iRow<N;++iRow){
+		free(mat[iRow]);
+	}
+	free(mat);
+}
+	
+
+
+static void freeMultiGridMatrix( void ){
+	
+	free(MultiGridCellMin);
+	free(MultiGridCellMax);
+	free(MultiGridCount);
+	#pragma acc exit data delete(MultiGridCellMin,MultiGridCellMax,MultiGridCount)
+	
+	free(MultiGridOffset);
+	
+	free(InvDiagA);
+	#pragma acc exit data delete(InvDiagA)
+	
+	free(CsrPtrP2G);
+	free(CsrIndP2G);
+	free(CsrCofP2G);
+	#pragma acc exit data delete(CsrPtrP2G,CsrIndP2G,CsrCofP2G)
+
+	free(CsrPtrG2P);
+	free(CsrIndG2P);
+	free(CsrCofG2P);
+	#pragma acc exit data delete(CsrPtrG2P,CsrIndG2P,CsrCofG2P)
+	
+	free(MultiGridVecS);
+	free(MultiGridVecR);
+	free(MultiGridVecQ);
+	#pragma acc exit data delete(MultiGridVecS,MultiGridVecR,MultiGridVecQ)
+	
+	free(MultiGridCsrNnzA);
+	free(MultiGridCsrPtrA);
+	free(MultiGridCsrIndA);
+	free(MultiGridCsrCofA);
+	#pragma acc exit data delete(MultiGridCsrPtrA)
+	#pragma acc exit data delete(MultiGridCsrIndA) 
+	#pragma acc exit data delete(MultiGridCsrCofA) 
+	
+	free(MultiGridInvDiagA);
+	#pragma acc exit data delete(MultiGridInvDiagA)
+	
+	free(MultiGridCsrNnzR);
+	free(MultiGridCsrPtrR);
+	free(MultiGridCsrIndR);
+	free(MultiGridCsrCofR);
+	#pragma acc exit data delete(MultiGridCsrPtrR,MultiGridCsrIndR,MultiGridCsrCofR)
+	
+	free(MultiGridCsrNnzP);
+	free(MultiGridCsrPtrP);
+	free(MultiGridCsrIndP);
+	free(MultiGridCsrCofP);
+	#pragma acc exit data delete(MultiGridCsrPtrP,MultiGridCsrIndP,MultiGridCsrCofP)
+	
+}
+
 
 #ifdef _CUDA
-
 static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n, const int nnz, const double alpha, double *csrVal, int *csrRowPtr, int *csrColInd, double *x, const double beta, double *y )
 {
+	static int init_flag=0;
+	static size_t bufferSize=0;
+	static void * buffer;
+	
+	if(init_flag==0){
+		bufferSize=8;
+		cudaMalloc( &buffer, bufferSize );
+		init_flag=1;
+	}
 	
 	cusparseSpMatDescr_t mat;
 	cusparseCreateCsr( &mat, m, n, nnz, csrRowPtr, csrColInd, csrVal, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
@@ -2448,45 +3459,263 @@ static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n
 	cusparseDnVecDescr_t vecY;
 	cusparseCreateDnVec( &vecY, m, y, CUDA_R_64F );
 	
-	size_t bufferSize=0;
-	void * buffer;
-	cusparseSpMV_bufferSize( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, &bufferSize);
-	cudaMalloc( &buffer, bufferSize );
+	size_t requiredSize;
+	cusparseSpMV_bufferSize( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, &requiredSize);
+	if( requiredSize > bufferSize ){
+		cudaFree( buffer );
+		bufferSize = 2*requiredSize;
+		cudaMalloc( &buffer, bufferSize );
+	}
+	//cudaMalloc( &buffer, requiredSize );
 	cusparseSpMV( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, buffer );
-	cudaFree( buffer );
+	//cudaFree( buffer );
 	
 	cusparseDestroySpMat(mat);
 	cusparseDestroyDnVec(vecX);
 	cusparseDestroyDnVec(vecY);
 	
 }
+
+static void myDcsrmv( cusparseHandle_t cusparse, const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
+{
+	#pragma acc kernels deviceptr(csrVal,csrRowPtr,csrColInd,x,y)
+	//#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<m; ++iRow){
+		double sum = 0.0;
+		#pragma acc loop seq
+		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
+			const int iColumn=csrColInd[iNonZero];
+			sum += alpha*csrVal[iNonZero]*x[iColumn];
+		}
+		y[iRow] *= beta;
+		y[iRow] += sum;
+	}
+}
+
+static void mycublasDdmv( cublasHandle_t cublas, const int n, const double alpha, const double *diag, const double *x, const double beta, double *y )
+{
+	// cublasDsbmv(cublas, CUBLAS_FILL_MODE_LOWER, n, 0, &alpha, diag, 1, x, 1, &beta, y, 1);
+	// This was not good performance when n is very large (> 307,200) (20221107 @ A100(80G) + HPC-SDK 21.5)
 	
+	#pragma acc kernels deviceptr(diag,x,y)
+	//#pragma acc kernels present(diag[0:n],x[0:n],y[0:n])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		y[iRow] *= beta;
+		y[iRow] += alpha*diag[iRow]*x[iRow];
+	}
+}
+
+static void mycublasDscal( cublasHandle_t cublas, const int n, const double alpha, double *x )
+{
+	cublasDscal( cublas, n, &alpha, x, 1 );
+}
+
+static void mycublasDcopy( cublasHandle_t cublas, const int n, const double *x, double *y )
+{
+	cublasDcopy( cublas, n, x, 1, y, 1);
+}
+
+static void mydevDset( const int n, const double alpha, double *x )
+{
+	#pragma acc kernels deviceptr(x)
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		x[iRow] = alpha;
+	}
+}
+
+
+static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cusparse, double *q, double *s, double *r ){
+	cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;
+	
+	#ifdef TWO_DIMENSIONAL
+	const int dim=2;
+	#else
+	const int dim=3;
+	#endif
+	
+	
+	#pragma acc host_data use_device(                         \
+		InvDiagA,                                             \
+		CsrCofP2G, CsrPtrP2G, CsrIndP2G,                      \
+		CsrCofG2P, CsrPtrG2P, CsrIndG2P,                      \
+		MultiGridCsrCofR, MultiGridCsrPtrR, MultiGridCsrIndR, \
+		MultiGridCsrCofP, MultiGridCsrPtrP, MultiGridCsrIndP, \
+		MultiGridCsrCofA, MultiGridCsrPtrA, MultiGridCsrIndA, \
+		MultiGridInvDiagA,                                    \
+		MultiGridVecQ, MultiGridVecS, MultiGridVecR           \
+	)
+	{
+		
+		
+		////////////---------- segregated precondition (1st term) M = D^(-1) ----------////////////
+		{// D^(-1)
+			const int N = DIM*(FluidParticleEnd-FluidParticleBegin);
+			cublasDcopy( cublas, N, q, 1, r, 1);
+			mycublasDdmv( cublas, N, 1.0, InvDiagA, r, 0.0, s);
+		}
+		
+		////////////---------- second term (multi-grid Jacobi) ----------////////////
+		{
+			const int iPower=0;
+			const int offset         =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeVec;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+			const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
+			const int NC = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+			
+			mycublasDcopy( cublas, NP, q, r);
+			myDcsrmv( cusparse, NC, NP, CsrNnzP2G, 1.0, CsrCofP2G, CsrPtrP2G, CsrIndP2G, r, 0.0, &MultiGridVecQ[offset] );
+			// mycusparseDcsrmv( cusparse, NC, NP, CsrNnzP2G, 1.0, CsrCofP2G, CsrPtrP2G, CsrIndP2G, r, 0.0, &MultiGridVecQ[offset] );
+			
+			mycublasDscal( cublas, NC, 0.0, &MultiGridVecS[offset] );
+			mycublasDcopy( cublas, NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
+			for(int iter=0;iter<2;++iter){
+				mycublasDdmv( cublas, NC, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offset], 1.0, &MultiGridVecS[offset] );
+				mycublasDcopy( cublas, NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
+				myDcsrmv( cusparse, NC, NC, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offset], 1.0, &MultiGridVecR[offset]);
+			}
+		}
+		
+		
+		for(int iPower=1;iPower<MultiGridDepth-1;++iPower){
+			
+			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
+			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
+			const int offsetPtrR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
+			const int offsetIndR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
+			const int *gridCountL    =MultiGridCount[iPower];
+			const int *gridCountS    =MultiGridCount[iPower-1];
+			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+			
+			myDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
+			// mycusparseDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
+			
+			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL]);
+			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+			for(int iter=0;iter<3;++iter){
+				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
+			}
+		}
+		
+		{
+			const int iPower=MultiGridDepth-1;
+			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
+			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
+			const int offsetPtrR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
+			const int offsetIndR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
+			const int offsetPtrP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+			const int offsetIndP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndP;
+			const int *gridCountL    =MultiGridCount[iPower];
+			const int *gridCountS    =MultiGridCount[iPower-1];
+			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+			
+			myDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
+			// mycusparseDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
+			
+			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL] );
+			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+			for(int iter=0;iter<4;++iter){
+				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+
+				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
+			}
+			mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+			myDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
+			// mycusparseDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
+		}
+		
+		for(int iPower=MultiGridDepth-2;iPower>0;--iPower){
+			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
+			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
+			const int offsetPtrP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+			const int offsetIndP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndP;
+			const int *gridCountL    =MultiGridCount[iPower];
+			const int *gridCountS    =MultiGridCount[iPower-1];
+			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+			
+			for(int iter=0;iter<3;++iter){
+				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
+				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+			}
+			myDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
+			// mycusparseDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
+		}
+		
+		{
+			const int iPower=0;
+			const int offset         =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeVec;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+			const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
+			const int NC = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+			
+			for(int iter=0;iter<2;++iter){
+				mycublasDcopy( cublas, NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
+				myDcsrmv( cusparse, NC, NC, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offset], 1.0, &MultiGridVecR[offset]);
+				mycublasDdmv( cublas, NC, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offset], 1.0, &MultiGridVecS[offset]);
+			}
+			myDcsrmv( cusparse, NP, NC, CsrNnzG2P, 1.0, CsrCofG2P, CsrPtrG2P, CsrIndG2P, &MultiGridVecS[offset], 1.0, s );
+			// mycusparseDcsrmv( cusparse, NP, NC, CsrNnzG2P, 1.0, CsrCofG2P, CsrPtrG2P, CsrIndG2P, &MultiGridVecS[offset], 1.0, s );
+		}
+	}
+	
+	cTill = clock(); cPrecondition += (cTill-cFrom); cFrom = cTill;
+}
 
 static void solveWithConjugatedGradient(void){
 	
 	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
 	const int N = DIM*fluidcount;
 	
+	double *b = VectorB;
 	double *x = (double *)malloc( N*sizeof(double) );
 	double *r = (double *)malloc( N*sizeof(double) );
-	double *z = (double *)malloc( N*sizeof(double) );
 	double *s = (double *)malloc( N*sizeof(double) );
+	double *y = (double *)malloc( N*sizeof(double) );
 	double *p = (double *)malloc( N*sizeof(double) );
 	double *q = (double *)malloc( N*sizeof(double) );
+	double *u = (double *)malloc( N*sizeof(double) );
+	double *buf = (double *)malloc( N*sizeof(double) );
 	double rho=0.0;
 	double rhop=0.0;
 	double tmp=0.0;
 	double alpha=0.0;
 	double beta=0.0;
-	double nrm=0.0;
-	double nrm0=0.0;
+	double rr=0.0;
+	double rr0=0.0;
+	double rs=0.0;
+	double rs0=0.0;
 	int iter=0;
 	
-//	const double one=1.0;
-//	const double minus_one=-1.0;
-//	const double zero=0.0;	
+	const double one=1.0;
+	const double minus_one=-1.0;
+	const double zero=0.0;	
 	
-	#pragma acc enter data create(x[0:N],r[0:N],z[0:N],s[0,N],p[0:N],q[0:N])
+	#pragma acc enter data create(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
 	
 	// cuda init
 	cublasHandle_t cublas;
@@ -2495,12 +3724,8 @@ static void solveWithConjugatedGradient(void){
 	cusparseHandle_t cusparse;
 	cusparseCreate(&cusparse);
 	
-//	cusparseMatDescr_t matDescr;
-//	cusparseCreateMatDescr(&matDescr);
-//	cusparseSetMatType(matDescr, CUSPARSE_MATRIX_TYPE_GENERAL);
-//	cusparseSetMatIndexBase(matDescr, CUSPARSE_INDEX_BASE_ZERO);
 	
-	// intialize
+	// set intial solution
 	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM],Mass[0:ParticleCount],x[0:N])
 	#pragma acc loop independent
 	#pragma omp parallel for
@@ -2512,51 +3737,96 @@ static void solveWithConjugatedGradient(void){
 		}
 	}
 	
-	#pragma acc host_data use_device(VectorB,CsrCofA,CsrPtrA,CsrIndA,x,r,z,s,p,q)
+	#pragma acc host_data use_device(b,CsrCofA,CsrPtrA,CsrIndA,x,r,s,y,p,q,u,buf)
 	{
-		cublasDcopy(cublas,N,VectorB,1,r,1);
-		//cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&minus_one,matDescr,CsrCofA,CsrPtrA,CsrIndA,x,&one,r);
+		// intialize
+		mydevDset( N, -1.0*__LINE__, r );
+		mydevDset( N, -1.0*__LINE__, s );
+		mydevDset( N, -1.0*__LINE__, y );
+		mydevDset( N, -1.0*__LINE__, p );
+		mydevDset( N, -1.0*__LINE__, q );
+		mydevDset( N, -1.0*__LINE__, u );
+		mydevDset( N, -1.0*__LINE__, buf );
+		
+		#pragma acc host_data use_device(MultiGridVecS,MultiGridVecR,MultiGridVecQ)
+		{
+			mydevDset( AllGridSizeVecS, -1.0*__LINE__, MultiGridVecS );
+			mydevDset( AllGridSizeVecR, -1.0*__LINE__, MultiGridVecR );
+			mydevDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
+		}
+		
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid(cublas,cusparse, b, s, buf );
+		#else
+		cublasDcopy(cublas,N,b,1,s,1);
+		#endif
+		cublasDdot(cublas,N,b,1,s,1,&rs0);
+		cublasDdot(cublas,N,b,1,b,1,&rr0);
+		
+		cublasDcopy(cublas,N,b,1,r,1);
 		mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
-		cublasDdot(cublas,N,VectorB,1,VectorB,1,&nrm0);
-		nrm0=sqrt(nrm0);
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
+		#else
+		cublasDcopy(cublas,N,r,1,s,1);
+		#endif
 		
 		for(iter=0;iter<N;++iter){
-			cublasDcopy(cublas,N,r,1,z,1);//前処理行列の逆行列省略
-			//cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,z,&zero,s);
-			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,z,0.0,s);
-			rhop = rho;
-			cublasDdot(cublas,N,s,1,z,1,&rho);
+			cublasDdot(cublas,N,r,1,r,1,&rr);
+			if(rr/rr0 <1.0e-12)break;
+			{
+				#ifdef CONVERGENCE_CHECK
+				cublasDdot(cublas,N,r,1,s,1,&rs);
+				log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
+				#endif
+			}
+			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,s,0.0,y);
+			cublasDdot(cublas,N,s,1,y,1,&rho);
 			if(iter==0){
-				cublasDcopy(cublas,N,z,1,p,1);
-				//cusparseDcsrmv(cusparse,CUSPARSE_OPERATION_NON_TRANSPOSE,N,N,NonzeroCountA,&one,matDescr,CsrCofA,CsrPtrA,CsrIndA,p,&zero,q);
+				cublasDcopy(cublas,N,s,1,p,1);
 				mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,p,0.0,q);
 			}
 			else{
 				beta=rho/rhop;
-				cublasDaxpy(cublas,N,&beta,p,1,z,1);
-				cublasDcopy(cublas,N,z,1,p,1);
-				cublasDaxpy(cublas,N,&beta,q,1,s,1);
-				cublasDcopy(cublas,N,s,1,q,1);
+				cublasDscal(cublas,N,&beta,p,1);
+				cublasDaxpy(cublas,N,&one,s,1,p,1);
+				cublasDscal(cublas,N,&beta,q,1);
+				cublasDaxpy(cublas,N,&one,y,1,q,1);
 			}
-			cublasDdot(cublas,N,q,1,q,1,&tmp);
+			#ifdef MULTIGRID_SOLVER
+			preconditionWithMultiGrid(cublas,cusparse, q, u, buf ); 
+			#else
+			cublasDcopy(cublas,N,q,1,u,1);
+			#endif
+			cublasDdot(cublas,N,q,1,u,1,&tmp);
 			alpha =rho/tmp;
 			cublasDaxpy(cublas,N,&alpha,p,1,x,1);
 			alpha*=-1;
 			cublasDaxpy(cublas,N,&alpha,q,1,r,1);
-			cublasDdot(cublas,N,r,1,r,1,&nrm);
-			nrm=sqrt(nrm);
-			if(nrm/nrm0 < 1.0e-6 )break;
-			
+			cublasDaxpy(cublas,N,&alpha,u,1,s,1);
+			rhop=rho;
 		}
+		cublasDdot(cublas,N,r,1,r,1,&rr);
+		cublasDdot(cublas,N,r,1,s,1,&rs);
+		log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
 		
+		{
+			#ifdef CONVERGENCE_CHECK
+			cublasDcopy(cublas,N,b,1,r,1);
+			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
+			#ifdef MULTIGRID_SOLVER
+			preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
+			#else
+			cublasDcopy(cublas,N,r,1,s,1);
+			#endif
+			cublasDdot(cublas,N,r,1,r,1,&rr);
+			cublasDdot(cublas,N,r,1,s,1,&rs);
+			log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
+			#endif
+		}
+
 	}
-	log_printf("nrm=%e, nrm0=%e, iter=%d\n",nrm,nrm0,iter);
-	//		myDcopy( N, VectorB, z );	
-	//		myDcsrmv( N, NonzeroCount, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, z );
-	//		myDdot( N, z, z, &nrm );
-	//		nrm=sqrt(nrm);
-	//		fprintf(stderr,"check nrm=%e\n",nrm);
-	
+
 	
 	//copy to Velocity
 	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],x[0:N])
@@ -2572,27 +3842,21 @@ static void solveWithConjugatedGradient(void){
 	
 	free(x);
 	free(r);
-	free(z);
 	free(s);
+	free(y);
 	free(p);
 	free(q);
-	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
-	
-	free(CsrPtrA);
-	free(CsrIndA);
-	free(CsrCofA);
-	free(VectorB);
-	#pragma acc exit data delete(CsrPtrA) detach(CsrPtrA)
-	#pragma acc exit data delete(CsrIndA) detach(CsrIndA)
-	#pragma acc exit data delete(CsrCofA) detach(CsrCofA)
-	#pragma acc exit data delete(VectorB) detach(VectorB)
-	
+	free(u);
+	free(buf);
+	#pragma acc exit data delete(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
 }
+
 
 #else //_CUDA is not defined,
 static void myDcsrmv( const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
 {
-	#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
+	#pragma acc kernels deviceptr(csrVal,csrRowPtr,csrColInd,x,y)
+	//#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<m; ++iRow){
@@ -2607,21 +3871,54 @@ static void myDcsrmv( const int m, const int n, const int nnz, const double alph
 	}
 }
 
+static void myDcsrmvForA( const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
+{
+	#pragma acc kernels deviceptr(csrVal,csrRowPtr,csrColInd,x,y)
+	//#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<m; ++iRow){
+		double sum = 0.0;
+		//#pragma acc loop seq
+		#pragma acc loop reduction(+:sum) vector
+		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
+			const int iColumn=csrColInd[iNonZero];
+			sum += alpha*csrVal[iNonZero]*x[iColumn];
+		}
+		y[iRow] *= beta;
+		y[iRow] += sum;
+	}
+}
+
+static void myDdmv( const int n, const double alpha, const double *diag, const double *x, const double beta, double *y )
+{
+	#pragma acc kernels deviceptr(diag,x,y)
+	//#pragma acc kernels present(diag[0:n],x[0:n],y[0:n])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		y[iRow] *= beta;
+		y[iRow] += alpha*diag[iRow]*x[iRow];
+	}
+}
+
 static void myDdot( const int n, const double *x, const double *y, double *res )
 {
 	double sum=0.0;
-	#pragma acc kernels copy(sum) present(x[0:n],y[0:n])
+	#pragma acc kernels copy(sum) deviceptr(x,y)
+	//#pragma acc kernels copy(sum) present(x[0:n],y[0:n])
 	#pragma acc loop reduction(+:sum)
 	#pragma omp parallel for reduction(+:sum)
 	for(int iRow=0;iRow<n;++iRow){
 		sum += x[iRow]*y[iRow];
-	}
+	}	
 	(*res)=sum;
 }
 
 static void myDaxpy( const int n, const double alpha, const double *x, double *y )
 {
-	#pragma acc kernels present(x[0:n],y[0:n])
+	#pragma acc kernels deviceptr(x,y)
+	//#pragma acc kernels present(x[0:n],y[0:n])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<n;++iRow){
@@ -2629,9 +3926,21 @@ static void myDaxpy( const int n, const double alpha, const double *x, double *y
 	}
 }
 
+static void myDscal( const int n, const double alpha, double *x )
+{
+	#pragma acc kernels deviceptr(x)
+	//#pragma acc kernels present(x[0:n])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		x[iRow] *= alpha;
+	}
+}
+
 static void myDcopy( const int n, const double *x, double *y )
 {
-	#pragma acc kernels present(x[0:n],y[0:n])
+	#pragma acc kernels deviceptr(x,y)
+	//#pragma acc kernels present(x[0:n],y[0:n])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<n;++iRow){
@@ -2639,31 +3948,195 @@ static void myDcopy( const int n, const double *x, double *y )
 	}
 }
 
-static void solveWithConjugatedGradient(void){
+static void myDset( const int n, const double alpha, double *x )
+{
+	#pragma acc kernels deviceptr(x)
+	//#pragma acc kernels present(x[0:n])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iRow=0;iRow<n;++iRow){
+		x[iRow] = alpha;
+	}
+}
+
+
+static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ // "r" is N memory allocated buffer
+	cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;
 	
-	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
+	#ifdef TWO_DIMENSIONAL
+	const int dim=2;
+	#else
+	const int dim=3;
+	#endif
+	
+	#pragma acc host_data use_device(                         \
+		InvDiagA,                                             \
+		CsrCofP2G, CsrPtrP2G, CsrIndP2G,                      \
+		CsrCofG2P, CsrPtrG2P, CsrIndG2P,                      \
+		MultiGridCsrCofR, MultiGridCsrPtrR, MultiGridCsrIndR, \
+		MultiGridCsrCofP, MultiGridCsrPtrP, MultiGridCsrIndP, \
+		MultiGridCsrCofA, MultiGridCsrPtrA, MultiGridCsrIndA, \
+		MultiGridInvDiagA,                                    \
+		MultiGridVecQ, MultiGridVecS, MultiGridVecR           \
+	)
+	{
+		
+		////////////---------- segregated precondition (1st term) M = D^(-1) ----------////////////
+		{// D^(-1)
+			const int N = DIM*(FluidParticleEnd-FluidParticleBegin);		
+			myDcopy( N, q, r );
+			myDdmv( N, 1.0, InvDiagA, r, 0.0, s);
+		}
+		
+		
+		////////////---------- second term (multi-grid Jacobi) ----------////////////
+		{
+			const int iPower=0;
+			const int offset         =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeVec;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+			const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
+			const int NC = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+			
+			myDcopy( NP, q, r );
+			myDcsrmv( NC, NP, CsrNnzP2G, 1.0, CsrCofP2G, CsrPtrP2G, CsrIndP2G, r, 0.0, &MultiGridVecQ[offset] );
+			myDscal( NC, 0.0, &MultiGridVecS[offset] );
+			myDcopy( NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
+			for(int iter=0;iter<2;++iter){
+				myDdmv( NC, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offset], 1.0, &MultiGridVecS[offset]);
+				myDcopy( NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
+				myDcsrmv( NC, NC, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offset], 1.0, &MultiGridVecR[offset]);
+			}
+		}
+		
+		for(int iPower=1;iPower<MultiGridDepth-1;++iPower){
+			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
+			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
+			const int offsetPtrR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
+			const int offsetIndR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
+			const int *gridCountL    =MultiGridCount[iPower];
+			const int *gridCountS    =MultiGridCount[iPower-1];
+			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+			
+			myDcsrmv( NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
+			
+			myDscal( NL, 0.0, &MultiGridVecS[offsetL] );
+			myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+			for(int iter=0;iter<3;++iter){
+				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
+			}
+		}
+		
+		{
+			const int iPower=MultiGridDepth-1;
+			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
+			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
+			const int offsetPtrR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
+			const int offsetIndR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
+			const int offsetPtrP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+			const int offsetIndP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndP;
+			const int *gridCountL    =MultiGridCount[iPower];
+			const int *gridCountS    =MultiGridCount[iPower-1];
+			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+			
+			myDcsrmv( NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
+			
+			myDscal( NL, 0.0, &MultiGridVecS[offsetL] );
+			myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+			for(int iter=0;iter<4;++iter){
+				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
+			}
+			myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+			myDcsrmv( NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
+		}
+		
+		for(int iPower=MultiGridDepth-2;iPower>0;--iPower){
+			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
+			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
+			const int offsetPtrP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+			const int offsetIndP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndP;
+			const int *gridCountL    =MultiGridCount[iPower];
+			const int *gridCountS    =MultiGridCount[iPower-1];
+			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+			
+			for(int iter=0;iter<3;++iter){
+				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
+				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
+				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
+			}
+			myDcsrmv( NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
+		}
+		
+		{
+			const int iPower=0;
+			const int offset         =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeVec;
+			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+			const int offsetIndA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+			const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
+			const int NC = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+			
+			for(int iter=0;iter<2;++iter){
+				myDcopy( NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
+				myDcsrmv( NC, NC, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offset], 1.0, &MultiGridVecR[offset]);
+				myDdmv( NC, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offset], 1.0, &MultiGridVecS[offset]);
+			}
+			myDcsrmv( NP, NC, CsrNnzG2P, 1.0, CsrCofG2P, CsrPtrG2P, CsrIndG2P, &MultiGridVecS[offset], 1.0, s );
+			
+		}
+	}
+	
+	cTill = clock(); cPrecondition += (cTill-cFrom); cFrom = cTill;
+}
+
+
+
+static void solveWithConjugatedGradient(void){
+	const int fluidcount = FluidParticleEnd-FluidParticleBegin;
 	const int N = DIM*fluidcount;
 	
 	const double *b = VectorB;
 	double *x = (double *)malloc( N*sizeof(double) );
 	double *r = (double *)malloc( N*sizeof(double) );
-	double *z = (double *)malloc( N*sizeof(double) );
 	double *s = (double *)malloc( N*sizeof(double) );
+	double *y = (double *)malloc( N*sizeof(double) );
 	double *p = (double *)malloc( N*sizeof(double) );
 	double *q = (double *)malloc( N*sizeof(double) );
+	double *u = (double *)malloc( N*sizeof(double) );
+	double *buf = (double *)malloc( N*sizeof(double) );
 	double rho=1.0;
 	double rhop=0.0;
 	double tmp=0.0;
 	double alpha=0.0;
 	double beta=0.0;
-	double nrm=0.0;
-	double nrm0=0.0;
+	double rr=0.0;
+	double rr0=0.0;
+	double rs=0.0;
+	double rs0=0.0;
 	int iter=0;
 	
 	
-	#pragma acc enter data create(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
-
-	// intialize
+	#pragma acc enter data create(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
+	
+	
+	// set initial solution
 	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],x[0:N],Force[0:ParticleCount][0:DIM],Mass[0:ParticleCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
@@ -2674,52 +4147,97 @@ static void solveWithConjugatedGradient(void){
 			x[iRow]=Velocity[iP][rD]-Force[iP][rD]/Mass[iP]*Dt;
 		}
 	}
-		
-	myDcopy( N, b, r );	
-	myDcsrmv( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-	myDdot( N, r, r, &nrm );
-	nrm=sqrt(nrm);
-	if(nrm==0.0)return;
-	myDdot( N, b, b, &nrm0 );
-	nrm0=sqrt(nrm0);
 	
-	for(iter=0;iter<N;++iter){
-		myDcopy( N, r, z ); //前処理行列の逆行列省略
-		myDcsrmv( N, N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, z, 0.0, s);
-		rhop = rho;
-		myDdot( N, s, z, &rho);
-		if(iter==0){
-			myDcopy( N, z, p );
-			myDcsrmv( N, N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, p, 0.0, q);
+	
+	#pragma acc host_data use_device(b,CsrCofA,CsrPtrA,CsrIndA,x,r,s,y,p,q,u,buf)
+	{
+		// intialize
+		myDset( N, -1.0*__LINE__, r );
+		myDset( N, -1.0*__LINE__, s );
+		myDset( N, -1.0*__LINE__, y );
+		myDset( N, -1.0*__LINE__, p );
+		myDset( N, -1.0*__LINE__, q );
+		myDset( N, -1.0*__LINE__, u );
+		myDset( N, -1.0*__LINE__, buf );
+		
+		#pragma acc host_data use_device(MultiGridVecS,MultiGridVecR,MultiGridVecQ)
+		{
+			myDset( AllGridSizeVecS, -1.0*__LINE__, MultiGridVecS );
+			myDset( AllGridSizeVecR, -1.0*__LINE__, MultiGridVecR );
+			myDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
 		}
-		else{
-			beta=rho/rhop;
-			myDaxpy( N, beta, p, z );
-			myDcopy( N, z, p );
-			myDaxpy( N, beta, q, s );
-			myDcopy( N, s, q );
+		
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid( b, s, buf );  
+		#else
+		myDcopy( N, b, s ); //
+		#endif
+		myDdot( N, b, s, &rs0 );
+		myDdot( N, b, b, &rr0 );
+		
+		myDcopy( N, b, r );	
+		myDcsrmvForA( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid( r, s, buf );  //
+		#else
+		myDcopy( N, r, s ); //
+		#endif
+		
+		for(iter=0;iter<N;++iter){
+			myDdot( N, r, r, &rr );
+			if(rr/rr0 <1.0e-12)break;
 			
+			#ifdef CONVERGENCE_CHECK
+			myDdot( N, r, s, &rs );
+			log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
+			#endif
+			
+			myDcsrmvForA( N, N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, s, 0.0, y);
+			myDdot( N, s, y, &rho);
+			if(iter==0){
+				myDcopy( N, s, p );
+				myDcsrmvForA( N, N, NonzeroCountA, 1.0, CsrCofA, CsrPtrA, CsrIndA, p, 0.0, q);
+			}
+			else{
+				beta=rho/rhop;
+				myDscal( N, beta, p );
+				myDaxpy( N, 1.0, s, p );
+				myDscal( N, beta, q );
+				myDaxpy( N, 1.0, y, q );
+			}
+			#ifdef MULTIGRID_SOLVER
+			preconditionWithMultiGrid( q, u, buf ); //
+			#else
+			myDcopy( N, q, u ); //
+			#endif
+			
+			myDdot( N, q, u, &tmp );
+			alpha =rho/tmp;
+			myDaxpy( N, alpha, p, x );
+			myDaxpy( N,-alpha, q, r );
+			myDaxpy( N,-alpha, u, s );
+			rhop=rho;
 		}
-		myDdot( N, q, q, &tmp );
-		alpha =rho/tmp;
-		myDaxpy( N, alpha, p, x );
-		myDaxpy( N,-alpha, q, r );
-		myDdot( N, r, r, &nrm );
-		nrm=sqrt(nrm);
-		// log_printf("iter=,%d, nrm=,%e, rho=,%e\n",iter,nrm,rho);
-		
-		if(nrm/nrm0 < 1.0e-6 )break;
+		myDdot( N, r, r, &rr );
+		myDdot( N, r, s, &rs );
 	}
-//	log_printf("\n");
-//	
+	log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
 	
-	log_printf("nrm=%e, nrm0=%e, iter=%d\n",nrm,nrm0,iter);
-//	myDcopy( N, b, r );	
-//	myDcsrmv( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-//	myDdot( N, r, r, &nrm );
-//	nrm=sqrt(nrm);
-//	fprintf(stderr,"check nrm=%e\n",nrm);
-	
+	#ifdef CONVERGENCE_CHECK
+	#pragma acc host_data use_device(b,CsrCofA,CsrPtrA,CsrIndA,x,r,s,y,p,q,u,buf)
+	{
+		myDcopy( N, b, r );	
+		myDcsrmvForA( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid( r, s, buf );  //
+		#else
+		myDcopy( N, b, s ); //
+		#endif
+		myDdot( N, r, r, &rr );
+		myDdot( N, r, s, &rs );
+	}
+	log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
+	#endif
 	
 	//copy to Velocity
 	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],x[0:N])
@@ -2735,24 +4253,19 @@ static void solveWithConjugatedGradient(void){
 	
 	free(x);
 	free(r);
-	free(z);
 	free(s);
+	free(y);
 	free(p);
 	free(q);
-	#pragma acc exit data delete(x[0:N],r[0:N],z[0:N],s[0:N],p[0:N],q[0:N])
-
-	
-	free(CsrPtrA);
-	free(CsrIndA);
-	free(CsrCofA);
-	free(VectorB);
-	#pragma acc exit data delete(CsrPtrA) detach(CsrPtrA)
-	#pragma acc exit data delete(CsrIndA) detach(CsrIndA)
-	#pragma acc exit data delete(CsrCofA) detach(CsrCofA)
-	#pragma acc exit data delete(VectorB) detach(VectorB)
+	free(u);
+	free(buf);
+	#pragma acc exit data delete(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
 
 }
+
 #endif
+
+
 
 
 static void calculateVirialPressureAtParticle()
