@@ -42,7 +42,6 @@ const double DOUBLE_ZERO[32]={0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0,
 using namespace std;
 //#define TWO_DIMENSIONAL
 //#define CONVERGENCE_CHECK
-#define MULTIGRID_SOLVER
 
 #define DIM 3
 
@@ -451,14 +450,10 @@ int main(int argc, char *argv[])
 		multiplyMatrixC();
 		freeMatrixC();
 		cTill = clock(); cImplicitMulti += (cTill-cFrom); cFrom = cTill;
-		#ifdef MULTIGRID_SOLVER
 		calculateMultiGridMatrix();
 		cTill = clock(); cPrecondition += (cTill-cFrom); cFrom = cTill;
-		#endif
 		solveWithConjugatedGradient();
-		#ifdef MULTIGRID_SOLVER
 		freeMultiGridMatrix();
-		#endif
 		freeMatrixA();
 		cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;
 		
@@ -2842,22 +2837,26 @@ static void calculateInvDiagA( void ){
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<N;++iRow){
-		InvDiagA[iRow] = 0.0;
+		InvDiagA[iRow] = -1.0*__LINE__;;
 	}
 	
 	#pragma acc kernels present(InvDiagA[0:N], CsrPtrA[0:N+1],CsrIndA[0:NonzeroCountA],CsrCofA[0:NonzeroCountA])
 	#pragma acc loop independent
 	#pragma omp parallel for 
 	for(int iRow=0;iRow<N;++iRow){
+		double sumCof=0.0;
 		#pragma acc loop seq
 		for(int iNonzero=CsrPtrA[iRow];iNonzero<CsrPtrA[iRow+1];++iNonzero){
-			if(CsrIndA[iNonzero]==iRow){
-				if(CsrCofA[iNonzero]!=0.0){
-					InvDiagA[iRow] = 1.0/CsrCofA[iNonzero];
-				}
-			}
+			sumCof+=abs(CsrCofA[iNonzero]);
+		}
+		if(sumCof!=0.0){
+			InvDiagA[iRow] = 2.0/sumCof;
+		}
+		else{
+			InvDiagA[iRow] = 0.0;
 		}
 	}
+	
 }
 
 static void calculateMultiGridCsrR( void ){
@@ -3383,6 +3382,305 @@ static void freeDenssMat(const int N, const int M, double **mat){
 	}
 	free(mat);
 }
+
+static void checkMultiGridMatrix( void ){
+	
+		
+	const int fluidcount = FluidParticleEnd-FluidParticleBegin;
+	const int totalGridCount = MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+	
+	#pragma acc update host(CsrPtrP2G[0:DIM*totalGridCount+1])
+	#pragma acc update host(CsrIndP2G[0:CsrNnzP2G],CsrCofP2G[0:CsrNnzP2G])
+	#pragma acc update host(CsrPtrG2P[0:DIM*fluidcount+1])
+	#pragma acc update host(CsrIndG2P[0:CsrNnzG2P],CsrCofG2P[0:CsrNnzG2P])
+	//#pragma acc update host(MultiGridCsrNnzR[0:MultiGridDepth])
+	#pragma acc update host(MultiGridCsrPtrR[0:AllGridSizeCsrPtrR])
+	#pragma acc update host(MultiGridCsrIndR[0:AllGridSizeCsrIndR],MultiGridCsrCofR[0:AllGridSizeCsrIndR])
+	//#pragma acc update host(MultiGridCsrNnzP[0:MultiGridDepth])
+	#pragma acc update host(MultiGridCsrPtrP[0:AllGridSizeCsrPtrP])
+	#pragma acc update host(MultiGridCsrIndP[0:AllGridSizeCsrIndP],MultiGridCsrCofP[0:AllGridSizeCsrIndP])
+	
+	
+	
+	log_printf("MultiGridDepth=%d\n",MultiGridDepth);
+	for(int iPower=0;iPower<MultiGridDepth;++iPower){
+		log_printf("MultiGridCellMin[%d]=(%d,%d,%d)\n",iPower, MultiGridCellMin[iPower][0],MultiGridCellMin[iPower][1],MultiGridCellMin[iPower][2]);
+		log_printf("MultiGridCellMax[%d]=(%d,%d,%d)\n",iPower, MultiGridCellMax[iPower][0],MultiGridCellMax[iPower][1],MultiGridCellMax[iPower][2]);
+		log_printf("MultiGridCount[%d]  =(%d,%d,%d)\n",iPower, MultiGridCount[iPower][0],  MultiGridCount[iPower][1],  MultiGridCount[iPower][2]);
+	}
+	log_printf("TopGridCount=(%d x %d x %d)=%d\n", TopGridCount[0],TopGridCount[1],TopGridCount[2],TotalTopGridCount);
+
+
+	fprintf(stderr,"line:%d\n",__LINE__);
+	double **denssA;
+	// CsrA
+	{
+		int N = DIM*fluidcount;
+		int M = DIM*fluidcount;
+		allocateDenssMat(N,M,denssA);
+		setDenssMat(N,M,NonzeroCountA,CsrPtrA,CsrIndA,CsrCofA,denssA);
+		writeDenssMat(N,M,denssA,"CsrA.csv");
+	}
+	
+	
+
+	// CsrP2G
+	double **denssP2G;
+	fprintf(stderr,"line:%d\n",__LINE__);
+	{
+		int N = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+		int M = DIM*fluidcount;
+		fprintf(stderr,"line:%d\n",__LINE__);
+		allocateDenssMat(N,M,denssP2G);
+		fprintf(stderr,"line:%d\n",__LINE__);
+		setDenssMat(N,M,CsrNnzP2G,CsrPtrP2G,CsrIndP2G,CsrCofP2G,denssP2G);
+		fprintf(stderr,"line:%d\n",__LINE__);
+		writeDenssMat(N,M,denssP2G,"CsrP2G.csv");
+		fprintf(stderr,"line:%d\n",__LINE__);
+	}
+	
+	// CsrG2P
+	double **denssG2P;
+	fprintf(stderr,"line:%d\n",__LINE__);
+	{
+		int N = DIM*fluidcount;
+		int M = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
+		allocateDenssMat(N,M,denssG2P);
+		setDenssMat(N,M,CsrNnzG2P,CsrPtrG2P,CsrIndG2P,CsrCofG2P,denssG2P);
+		writeDenssMat(N,M,denssG2P,"CsrG2P.csv");
+	}
+	
+	double **denssMultiA0;
+	// CsrMultiA0
+	fprintf(stderr,"line:%d\n",__LINE__);
+	{
+		const int iPower=0;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+		const int *gridCount = MultiGridCount[iPower];
+		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		int M = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		
+		allocateDenssMat(N,M,denssMultiA0);
+		setDenssMat(N,M,MultiGridCsrNnzA[iPower],&MultiGridCsrPtrA[offsetPtr],&MultiGridCsrIndA[offsetInd],&MultiGridCsrCofA[offsetInd],denssMultiA0);
+		writeDenssMat(N,M,denssMultiA0,"MultiA0.csv");
+	}
+	
+	double **denssMultiR1;
+	// CsrMultiR1
+	
+	fprintf(stderr,"line:%d\n",__LINE__);
+	{
+		const int iPower=1;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndR;
+		const int *gridCountL = MultiGridCount[iPower];
+		const int *gridCountS = MultiGridCount[iPower-1];
+		int N = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		int M = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+		fprintf(stderr,"line:%d, iPower=%d, MultiGridCsrR[iPower]\n",__LINE__,iPower);
+		fprintf(stderr,"MultiGridCsrNnzR[iPower]=%d\n", MultiGridCsrNnzR[iPower]);
+		for(int iRow=0;iRow<N;++iRow){
+			fprintf(stderr, "%d:(%d,%d)\n", iRow, MultiGridCsrPtrR[offsetPtr+iRow], MultiGridCsrPtrR[offsetPtr+iRow+1]);
+		}
+		allocateDenssMat(N,M,denssMultiR1);
+		setDenssMat(N,M,MultiGridCsrNnzR[iPower],&MultiGridCsrPtrR[offsetPtr],&MultiGridCsrIndR[offsetInd],&MultiGridCsrCofR[offsetInd],denssMultiR1);
+		writeDenssMat(N,M,denssMultiR1,"MultiR1.csv");
+	}
+
+	double **denssMultiR2;
+	// CsrMultiR2
+	fprintf(stderr,"line:%d\n",__LINE__);
+	if(2<MultiGridDepth){
+		const int iPower=2;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndR;
+		const int *gridCountL = MultiGridCount[iPower];
+		const int *gridCountS = MultiGridCount[iPower-1];
+		int N = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		int M = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+		fprintf(stderr,"line:%d, iPower=%d, MultiGridCsrR[iPower]\n",__LINE__,iPower);
+		fprintf(stderr,"MultiGridCsrNnzR[iPower]=%d\n", MultiGridCsrNnzR[iPower]);
+		for(int iRow=0;iRow<N;++iRow){
+			fprintf(stderr, "%d:(%d,%d)\n", iRow, MultiGridCsrPtrR[offsetPtr+iRow], MultiGridCsrPtrR[offsetPtr+iRow+1]);
+		}
+		allocateDenssMat(N,M,denssMultiR2);
+		setDenssMat(N,M,MultiGridCsrNnzR[iPower],&MultiGridCsrPtrR[offsetPtr],&MultiGridCsrIndR[offsetInd],&MultiGridCsrCofR[offsetInd],denssMultiR2);
+		writeDenssMat(N,M,denssMultiR2,"MultiR2.csv");
+	}
+
+	
+	
+	
+	double **denssMultiP1;
+	// CsrMultiP1
+	fprintf(stderr,"line:%d\n",__LINE__);
+	{
+		const int iPower=1;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndP;
+		const int *gridCountL = MultiGridCount[iPower];
+		const int *gridCountS = MultiGridCount[iPower-1];
+		int N = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+		int M = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		allocateDenssMat(N,M,denssMultiP1);
+		setDenssMat(N,M,MultiGridCsrNnzP[iPower],&MultiGridCsrPtrP[offsetPtr],&MultiGridCsrIndP[offsetInd],&MultiGridCsrCofP[offsetInd],denssMultiP1);
+		writeDenssMat(N,M,denssMultiP1,"MultiP1.csv");
+	}
+	
+	
+	double **denssMultiP2;
+	// CsrMultiP2
+	fprintf(stderr,"line:%d\n",__LINE__);
+	if(2<MultiGridDepth){
+		const int iPower=2;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndP;
+		const int *gridCountL = MultiGridCount[iPower];
+		const int *gridCountS = MultiGridCount[iPower-1];
+		int N = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+		int M = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+		allocateDenssMat(N,M,denssMultiP2);
+		setDenssMat(N,M,MultiGridCsrNnzP[iPower],&MultiGridCsrPtrP[offsetPtr],&MultiGridCsrIndP[offsetInd],&MultiGridCsrCofP[offsetInd],denssMultiP2);
+		writeDenssMat(N,M,denssMultiP2,"MultiP2.csv");
+	}
+	
+	double **denssMultiA1;
+	// CsrMultiA1
+	fprintf(stderr,"line:%d\n",__LINE__);
+	{
+		const int iPower=1;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+		const int *gridCount = MultiGridCount[iPower];
+		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		int M = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		allocateDenssMat(N,M,denssMultiA1);
+		setDenssMat(N,M,MultiGridCsrNnzA[iPower],&MultiGridCsrPtrA[offsetPtr],&MultiGridCsrIndA[offsetInd],&MultiGridCsrCofA[offsetInd],denssMultiA1);
+		writeDenssMat(N,M,denssMultiA1,"MultiA1.csv");
+	}
+	
+	double **denssMultiA2;
+	// CsrMultiA2
+	fprintf(stderr,"line:%d\n",__LINE__);
+	if(2<MultiGridDepth){
+		const int iPower=2;
+		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
+		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
+		const int *gridCount = MultiGridCount[iPower];
+		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		int M = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		allocateDenssMat(N,M,denssMultiA2);
+		setDenssMat(N,M,MultiGridCsrNnzA[iPower],&MultiGridCsrPtrA[offsetPtr],&MultiGridCsrIndA[offsetInd],&MultiGridCsrCofA[offsetInd],denssMultiA2);
+		writeDenssMat(N,M,denssMultiA2,"MultiA2.csv");
+	}
+	
+	fprintf(stderr,"line:%d\n",__LINE__);
+	// InvDiagA
+	{
+		FILE *fp = fopen("InvDiagA.csv","w");
+		int N = DIM*fluidcount;
+		for(int iRow=0;iRow<N;++iRow){
+			fprintf(fp, "%e,\n", InvDiagA[ iRow ]);
+		}
+		fclose(fp);
+	}
+	
+	
+	
+	if(0<MultiGridDepth){
+		FILE *fp = fopen("InvD0.csv","w");
+		const int iPower=0;
+		int offset = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+		const int *gridCount = MultiGridCount[iPower];
+		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		for(int iRow=0;iRow<N;++iRow){
+			fprintf(fp, "%e,\n", MultiGridInvDiagA[ offset + iRow ]);
+		}
+		fclose(fp);
+	}
+	if(1<MultiGridDepth){
+		FILE *fp = fopen("InvD1.csv","w");
+		const int iPower=1;
+		int offset = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+		const int *gridCount = MultiGridCount[iPower];
+		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		for(int iRow=0;iRow<N;++iRow){
+			fprintf(fp, "%e,\n", MultiGridInvDiagA[ offset + iRow ]);
+		}
+		fclose(fp);
+	}
+	if(2<MultiGridDepth){
+		FILE *fp = fopen("InvD2.csv","w");
+		const int iPower=2;
+		int offset = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
+		const int *gridCount = MultiGridCount[iPower];
+		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+		for(int iRow=0;iRow<N;++iRow){
+			fprintf(fp, "%e,\n", MultiGridInvDiagA[ offset + iRow ]);
+		}
+		fclose(fp);
+	}	
+	//	double **denssR1A0P1;
+//	fprintf(stderr,"line:%d\n",__LINE__);
+//	{
+//		const int iPower=1;
+//		const int *gridCountL = MultiGridCount[iPower];
+//		const int *gridCountS = MultiGridCount[iPower-1];
+//		int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
+//		int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
+//		allocateDenssMat(NL,NL,denssR1A0P1);
+//
+//		for(int iP=0;iP<NL;++iP){
+//			for(int iQ=0;iQ<NL;++iQ){
+//				denssR1A0P1[iP][iQ]=0.0;
+//			}
+//		}
+//
+//		for(int iP=0;iP<NL;++iP){
+//			for(int iQ=0;iQ<NL;++iQ){
+//				for(int iR=0;iR<NS;++iR){
+//					for(int iS=0;iS<NS;++iS){
+//						double tmp = 1.0;
+//						denssR1A0P1[iP][iQ] += denssMultiR1[iP][iR]*denssMultiA0[iR][iS]*denssMultiP1[iS][iQ];
+//					}
+//				}
+//			}
+//		}
+//		writeDenssMat(NL,NL,denssR1A0P1,"R1A0P1.csv");
+//	}
+	
+//	double **denssP2GAG2P;
+//	fprintf(stderr,"line:%d\n",__LINE__);
+//	{
+//		int NP = DIM*fluidcount;
+//		const int iPower=0;
+//		const int *gridCount = MultiGridCount[iPower];
+//		int NG = DIM*gridCount[0]*gridCount[1]*gridCount[2];
+//
+//		allocateDenssMat(NG,NG,denssP2GAG2P);
+//		for(int iP=0;iP<NG;++iP){
+//			for(int iQ=0;iQ<NG;++iQ){
+//				denssP2GAG2P[iP][iQ]=0.0;
+//			}
+//		}
+//		
+//		for(int iP=0;iP<NG;++iP){
+//			for(int iQ=0;iQ<NG;++iQ){
+//				for(int iR=0;iR<NP;++iR){
+//					for(int iS=0;iS<NP;++iS){
+//						denssP2GAG2P[iP][iQ] += denssP2G[iP][iR]*denssA[iR][iS]*denssG2P[iS][iQ];
+//					}
+//				}
+//			}
+//		}	
+//		writeDenssMat(NG,NG,denssP2GAG2P,"P2GAG2A.csv");
+//	}
+	
+	exit(1);
+
+}
+
 	
 
 
@@ -3603,7 +3901,7 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 			
 			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL]);
 			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<3;++iter){
+			for(int iter=0;iter<2;++iter){
 				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
@@ -3631,7 +3929,7 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 			
 			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL] );
 			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<4;++iter){
+			for(int iter=0;iter<3;++iter){
 				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 
@@ -3655,7 +3953,7 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
 			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
 			
-			for(int iter=0;iter<3;++iter){
+			for(int iter=0;iter<2;++iter){
 				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
 				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
@@ -3755,21 +4053,15 @@ static void solveWithConjugatedGradient(void){
 			mydevDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
 		}
 		
-		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid(cublas,cusparse, b, s, buf );
-		#else
-		cublasDcopy(cublas,N,b,1,s,1);
-		#endif
+		//cublasDcopy(cublas,N,b,1,s,1);
 		cublasDdot(cublas,N,b,1,s,1,&rs0);
 		cublasDdot(cublas,N,b,1,b,1,&rr0);
 		
 		cublasDcopy(cublas,N,b,1,r,1);
 		mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
-		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
-		#else
-		cublasDcopy(cublas,N,r,1,s,1);
-		#endif
+		//cublasDcopy(cublas,N,r,1,s,1);
 		
 		for(iter=0;iter<N;++iter){
 			cublasDdot(cublas,N,r,1,r,1,&rr);
@@ -3793,11 +4085,8 @@ static void solveWithConjugatedGradient(void){
 				cublasDscal(cublas,N,&beta,q,1);
 				cublasDaxpy(cublas,N,&one,y,1,q,1);
 			}
-			#ifdef MULTIGRID_SOLVER
 			preconditionWithMultiGrid(cublas,cusparse, q, u, buf ); 
-			#else
-			cublasDcopy(cublas,N,q,1,u,1);
-			#endif
+			//cublasDcopy(cublas,N,q,1,u,1);
 			cublasDdot(cublas,N,q,1,u,1,&tmp);
 			alpha =rho/tmp;
 			cublasDaxpy(cublas,N,&alpha,p,1,x,1);
@@ -3814,11 +4103,8 @@ static void solveWithConjugatedGradient(void){
 			#ifdef CONVERGENCE_CHECK
 			cublasDcopy(cublas,N,b,1,r,1);
 			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
-			#ifdef MULTIGRID_SOLVER
 			preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
-			#else
-			cublasDcopy(cublas,N,r,1,s,1);
-			#endif
+			//cublasDcopy(cublas,N,r,1,s,1);
 			cublasDdot(cublas,N,r,1,r,1,&rr);
 			cublasDdot(cublas,N,r,1,s,1,&rs);
 			log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
@@ -4027,7 +4313,7 @@ static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ 
 			
 			myDscal( NL, 0.0, &MultiGridVecS[offsetL] );
 			myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<3;++iter){
+			for(int iter=0;iter<2;++iter){
 				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
@@ -4054,7 +4340,7 @@ static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ 
 			
 			myDscal( NL, 0.0, &MultiGridVecS[offsetL] );
 			myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<4;++iter){
+			for(int iter=0;iter<3;++iter){
 				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
@@ -4076,7 +4362,7 @@ static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ 
 			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
 			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
 			
-			for(int iter=0;iter<3;++iter){
+			for(int iter=0;iter<2;++iter){
 				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
 				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
@@ -4167,21 +4453,19 @@ static void solveWithConjugatedGradient(void){
 			myDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
 		}
 		
-		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid( b, s, buf );  
-		#else
-		myDcopy( N, b, s ); //
-		#endif
+		//	myDcopy( N, b, s ); //
 		myDdot( N, b, s, &rs0 );
 		myDdot( N, b, b, &rr0 );
+		if(!(rs0==rs0)){
+			log_printf("line:%d, rs0=%e\n",__LINE__,rs0);
+			checkMultiGridMatrix();
+		}
 		
 		myDcopy( N, b, r );	
 		myDcsrmvForA( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid( r, s, buf );  //
-		#else
-		myDcopy( N, r, s ); //
-		#endif
+		//	myDcopy( N, r, s ); //
 		
 		for(iter=0;iter<N;++iter){
 			myDdot( N, r, r, &rr );
@@ -4205,12 +4489,8 @@ static void solveWithConjugatedGradient(void){
 				myDscal( N, beta, q );
 				myDaxpy( N, 1.0, y, q );
 			}
-			#ifdef MULTIGRID_SOLVER
 			preconditionWithMultiGrid( q, u, buf ); //
-			#else
-			myDcopy( N, q, u ); //
-			#endif
-			
+			//	myDcopy( N, q, u ); //
 			myDdot( N, q, u, &tmp );
 			alpha =rho/tmp;
 			myDaxpy( N, alpha, p, x );
@@ -4228,11 +4508,8 @@ static void solveWithConjugatedGradient(void){
 	{
 		myDcopy( N, b, r );	
 		myDcsrmvForA( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid( r, s, buf );  //
-		#else
-		myDcopy( N, b, s ); //
-		#endif
+		//	myDcopy( N, b, s ); //
 		myDdot( N, r, r, &rr );
 		myDdot( N, r, s, &rs );
 	}
