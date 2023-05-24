@@ -1,4 +1,0 @@
-../../generator/GeneratorForMph box
-
-
-

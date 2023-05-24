@@ -43,6 +43,10 @@ using namespace std;
 //#define TWO_DIMENSIONAL
 //#define CONVERGENCE_CHECK
 
+// 20230514 added by Masahiro Kondo for Bingham calculation
+#define BINGHAM
+
+
 #define DIM 3
 
 // Property definition
@@ -149,6 +153,28 @@ static double *Kappa;           // bulk modulus
 #pragma acc declare create(FluidParticleBegin,FluidParticleEnd,DensityA,GravityCenter,PressureA,VolStrainP,DivergenceP,PressureP)
 #pragma acc declare create(VirialPressureAtParticle,VirialPressureInsideRadius,VirialStressAtParticle,Mu,Lambda,Kappa)
 
+// 20230514 added by Masahiro Kondo for Bingham calculation
+#ifdef BINGHAM
+static double SolidViscosity[TYPE_COUNT];
+static double BaseYieldStress[TYPE_COUNT];
+static double FrictionAngle[TYPE_COUNT];
+static double PlasticViscosity[TYPE_COUNT];
+static double *MuS;    // SolidViscosity
+static double *SigY;   // YeildStress
+static double *MuP;    // PlasticViscosity;
+#pragma acc declare create(SolidViscosity,BaseYieldStress,FrictionAngle,PlasticViscosity,MuS,SigY,MuP)
+#pragma acc routine seq
+inline double shearviscosity( const double strainrate, const double solidviscosity, const double yieldstress, const double plasticviscosity )
+{
+	const double yieldrate = yieldstress/solidviscosity;
+	if(strainrate<yieldrate){
+		return solidviscosity;
+	}
+	else{
+		return (yieldstress+(strainrate-yieldrate)*plasticviscosity)/strainrate;
+	}
+}
+#endif
 
 static double Gravity[DIM] = {0.0,0.0,0.0};
 #pragma acc declare create(Gravity)
@@ -372,6 +398,7 @@ int main(int argc, char *argv[])
 	#pragma acc update device(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
 	#pragma acc update device(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
 	#pragma acc update device(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
+	#pragma acc update device(SolidViscosity[0:TYPE_COUNT],BaseYieldStress[0:TYPE_COUNT],FrictionAngle[0:TYPE_COUNT],PlasticViscosity[0:TYPE_COUNT])
 	#pragma acc update device(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
 	#pragma acc update device(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
 	#pragma acc update device(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
@@ -427,6 +454,8 @@ int main(int argc, char *argv[])
 		calculateDensityP();
 		
 		// calculate physical coefficient (viscosity, bulk modulus, bulk viscosity..)
+		calculateDivergenceP();
+    	calculatePressureP();
 		calculatePhysicalCoefficients();
 		
 		// calculate P(s,rho) s:fixed
@@ -459,8 +488,6 @@ int main(int argc, char *argv[])
 		
 		
 		if( Time + 1.0e-5*Dt >= VtkOutputNext ){
-			calculateDivergenceP();
-    		calculatePressureP();
         	calculateViscosityV();
     		calculateVirialStressAtParticle();
         	cTill = clock(); cVirial += (cTill-cFrom); cFrom = cTill;
@@ -551,7 +578,14 @@ static void readDataFile(char *filename)
             else if(sscanf(buf," BulkModulus %lf %lf %lf %lf",&BulkModulus[0],&BulkModulus[1],&BulkModulus[2],&BulkModulus[3])==4){mode=reading_global;}
             else if(sscanf(buf," BulkViscosity %lf %lf %lf %lf",&BulkViscosity[0],&BulkViscosity[1],&BulkViscosity[2],&BulkViscosity[3])==4){mode=reading_global;}
             else if(sscanf(buf," ShearViscosity %lf %lf %lf %lf",&ShearViscosity[0],&ShearViscosity[1],&ShearViscosity[2],&ShearViscosity[3])==4){mode=reading_global;}
-            else if(sscanf(buf," SurfaceTension %lf %lf %lf %lf",&SurfaceTension[0],&SurfaceTension[1],&SurfaceTension[2],&SurfaceTension[3])==4){mode=reading_global;}
+        	// 20230514 added by Masahiro Kondo for Bingham calculation
+        	#ifdef BINGHAM
+        	else if(sscanf(buf," SolidViscosity %lf %lf %lf %lf",&SolidViscosity[0],&SolidViscosity[1],&SolidViscosity[2],&SolidViscosity[3])==4){mode=reading_global;}
+            else if(sscanf(buf," BaseYieldStress %lf %lf %lf %lf",&BaseYieldStress[0],&BaseYieldStress[1],&BaseYieldStress[2],&BaseYieldStress[3])==4){mode=reading_global;}
+            else if(sscanf(buf," FrictionAngle %lf %lf %lf %lf",&FrictionAngle[0],&FrictionAngle[1],&FrictionAngle[2],&FrictionAngle[3])==4){mode=reading_global;}
+            else if(sscanf(buf," PlasticViscosity %lf %lf %lf %lf",&PlasticViscosity[0],&PlasticViscosity[1],&PlasticViscosity[2],&PlasticViscosity[3])==4){mode=reading_global;}
+			#endif
+        	else if(sscanf(buf," SurfaceTension %lf %lf %lf %lf",&SurfaceTension[0],&SurfaceTension[1],&SurfaceTension[2],&SurfaceTension[3])==4){mode=reading_global;}
             else if(sscanf(buf," InteractionRatio(Type0) %lf %lf %lf %lf",&InteractionRatio[0][0],&InteractionRatio[0][1],&InteractionRatio[0][2],&InteractionRatio[0][3])==4){mode=reading_global;}
             else if(sscanf(buf," InteractionRatio(Type1) %lf %lf %lf %lf",&InteractionRatio[1][0],&InteractionRatio[1][1],&InteractionRatio[1][2],&InteractionRatio[1][3])==4){mode=reading_global;}
             else if(sscanf(buf," InteractionRatio(Type2) %lf %lf %lf %lf",&InteractionRatio[2][0],&InteractionRatio[2][1],&InteractionRatio[2][2],&InteractionRatio[2][3])==4){mode=reading_global;}
@@ -607,6 +641,12 @@ static void readGridFile(char *filename)
         Mu = (double (*))malloc(ParticleCount*sizeof(double));
     	Lambda = (double (*))malloc(ParticleCount*sizeof(double));
     	Kappa = (double (*))malloc(ParticleCount*sizeof(double));
+    	// 20230514 added by Masahiro Kondo for Bingham calculation
+        #ifdef BINGHAM
+    	MuS = (double (*))malloc(ParticleCount*sizeof(double));
+    	SigY= (double (*))malloc(ParticleCount*sizeof(double));
+    	MuP = (double (*))malloc(ParticleCount*sizeof(double));
+    	#endif
 
     	TmpIntScalar = (int *)malloc(ParticleCount*sizeof(int));
     	TmpDoubleScalar = (double *)malloc(ParticleCount*sizeof(double));
@@ -636,6 +676,13 @@ static void readGridFile(char *filename)
     	#pragma acc enter data create(Mu[0:ParticleCount]) attach(Mu)
     	#pragma acc enter data create(Lambda[0:ParticleCount]) attach(Lambda)
     	#pragma acc enter data create(Kappa[0:ParticleCount]) attach(Kappa)
+    	// 20230514 added by Masahiro Kondo for Bingham calculation
+        #ifdef BINGHAM
+    	#pragma acc enter data create(MuS[0:ParticleCount]) attach(MuS)
+    	#pragma acc enter data create(SigY[0:ParticleCount]) attach(SigY)
+    	#pragma acc enter data create(MuP[0:ParticleCount]) attach(MuP)
+    	#endif
+   
     	
     	#pragma acc enter data create(TmpIntScalar[0:ParticleCount]) attach(TmpIntScalar)
     	#pragma acc enter data create(TmpDoubleScalar[0:ParticleCount]) attach(TmpDoubleScalar)
@@ -716,8 +763,10 @@ static void writeVtkFile(char *filename)
 //	#pragma acc update host(ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
 //	#pragma acc update host(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
 //	#pragma acc update host(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
-//	#pragma acc update host(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
-//	#pragma acc update host(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
+	#pragma acc update host(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
+	#pragma acc update host(SigY[0:ParticleCount])
+	#pragma acc update host(VirialPressureAtParticle[0:ParticleCount])
+//	#pragma acc update host(VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
 //	#pragma acc update host(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
 //	#pragma acc update host(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount])
 //	#pragma acc update host(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
@@ -794,6 +843,12 @@ static void writeVtkFile(char *filename)
 	fprintf(fp, "LOOKUP_TABLE default\n");
 	for(int iP=0;iP<ParticleCount;++iP){
 		fprintf(fp, "%e\n", (float)PressureP[iP]);
+	}
+	fprintf(fp, "\n");
+	fprintf(fp, "SCALARS SigY float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)SigY[iP]);
 	}
 	fprintf(fp, "\n");
 	fprintf(fp, "SCALARS VirialPressureAtParticle float 1\n");
@@ -1538,6 +1593,28 @@ static void calculatePhysicalCoefficients()
 	for(int iP=0;iP<ParticleCount;++iP){
 		Mu[iP]=ShearViscosity[Property[iP]];
 	}
+	
+	// 20230514 added by Masahiro Kondo for Bingham calculation
+	#ifdef BINGHAM
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		MuS[iP]=SolidViscosity[Property[iP]];
+	}
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		SigY[iP]=BaseYieldStress[Property[iP]]+tan(M_PI/180.0*FrictionAngle[Property[iP]])*PressureP[iP];
+	}
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		MuP[iP]=PlasticViscosity[Property[iP]];
+	}
+	#endif
 }
 
 static void calculateDensityA()
@@ -2045,7 +2122,7 @@ static void calculateMatrixA( void )
 		VectorB[iRow]=0.0;
 	}
     
-    #pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],m[0:ParticleCount],Mu[0:ParticleCount],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA],CsrPtrA[0:N],VectorB[0:N])
+    #pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],m[0:ParticleCount],Mu[0:ParticleCount],MuS[0:ParticleCount],SigY[0:ParticleCount],MuP[0:ParticleCount],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA],CsrPtrA[0:N],VectorB[0:N])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=FluidParticleBegin;iP<FluidParticleEnd;++iP){
@@ -2071,7 +2148,41 @@ static void calculateMatrixA( void )
 				const double dij = sqrt(rij2);
 				const double wdrij = -dwvdr(dij,RadiusV);
 				const double eij[DIM] = {rij[0]/dij,rij[1]/dij,rij[2]/dij};
+				
+				// 20230514 added by Masahiro Kondo for Bingham calculation
+				#ifdef BINGHAM
+				// Bingham  // 20221111 modified by Masahiro Kondo
+				const double uij[DIM] = {v[jP][0]-v[iP][0],v[jP][1]-v[iP][1],v[jP][2]-v[iP][2]};
+				double strainrate = 2.0*fabs(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])/dij;
+				const double mui = shearviscosity( strainrate, MuS[iP], SigY[iP], MuP[iP] );
+				const double muj = shearviscosity( strainrate, MuS[jP], SigY[jP], MuP[jP] );
+				#ifndef _OPENACC
+				{	
+					if(!(mui>0.0)){
+						fprintf(stderr,"mui=%e\n",mui);
+						fprintf(stderr,"iP=%d, MuS[iP]=%e, SigY[iP]=%e, MuP[iP]=%e\n", iP, MuS[iP], SigY[iP], MuP[iP]);
+						fprintf(stderr, "strainrate=%e\n",strainrate);
+						fprintf(stderr, "dij=%e\n", dij);
+						fprintf(stderr, "r[iP]=(%e,%e,%e)\n", r[iP][0], r[iP][1], r[iP][2]);
+						fprintf(stderr, "v[iP]=(%e,%e,%e)\n", v[iP][0], v[iP][1], r[iP][2]);
+					}
+					if(!(muj>0.0)){
+						fprintf(stderr,"muj=%e\n",muj);
+						fprintf(stderr,"jP=%d, MuS[jP]=%e, SigY[jP]=%e, MuP[jP]=%e\n", jP, MuS[jP], SigY[jP], MuP[jP]);
+						fprintf(stderr, "strainrate=%e\n",strainrate);
+						fprintf(stderr, "dij=%e\n", dij);
+						fprintf(stderr, "r[jP]=(%e,%e,%e)\n", r[jP][0], r[jP][1], r[jP][2]);
+						fprintf(stderr, "v[jP]=(%e,%e,%e)\n", v[jP][0], v[jP][1], r[jP][2]);
+					}						
+					assert(mui>0.0); // 20221205 for check
+					assert(muj>0.0); // 20221205 for check
+				}
+				#endif //_OPENACC
+				const double muij = 2.0*(mui*muj)/(mui+muj);
+				#else
 				const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
+				#endif
+
 				#pragma acc loop seq
 				for(int rD=0;rD<DIM;++rD){
 					const int iRow = DIM*iP+rD;
@@ -4720,7 +4831,7 @@ static void calculateVirialStressAtParticle()
 
 	}
 	
-	#pragma acc kernels present(x[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Mu[0:ParticleCount])
+	#pragma acc kernels present(x[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Mu[0:ParticleCount],MuS[0:ParticleCount],SigY[0:ParticleCount],MuP[0:ParticleCount])
 	#pragma acc loop independent	
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
@@ -4743,7 +4854,19 @@ static void calculateVirialStressAtParticle()
 				const double dwij = -dwvdr(rij,RadiusV);
 				const double eij[DIM] = {xij[0]/rij,xij[1]/rij,xij[2]/rij};
 				const double vij[DIM] = {v[jP][0]-v[iP][0],v[jP][1]-v[iP][1],v[jP][2]-v[iP][2]};
-				const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
+				
+				// 20230514 added by Masahiro Kondo for Bingham calculation
+				#ifdef BINGHAM
+				// Bingham  // 20221111 modified by Masahiro Kondo
+				const double uij[DIM] = {v[jP][0]-v[iP][0],v[jP][1]-v[iP][1],v[jP][2]-v[iP][2]};
+				double strainrate = 2.0*fabs(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])/rij;
+				const double mui = shearviscosity( strainrate, MuS[iP], SigY[iP], MuP[iP] );
+				const double muj = shearviscosity( strainrate, MuS[jP], SigY[jP], MuP[jP] );
+				const double muij = 2.0*(mui*muj)/(mui+muj);
+				#else
+				 const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
+				#endif
+				
 				double fij[DIM] = {0.0,0.0,0.0};
 				#pragma acc loop seq
 				for(int iD=0;iD<DIM;++iD){
