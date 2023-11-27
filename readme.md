@@ -21,6 +21,8 @@
 //    Masahiro Kondo & National Institute of Advanced Industrial Science and Technology (AIST)    //
 //================================================================================================//
 ```
+This branch is left for saving the version using CUDA libraries, i.e., cusparse and cublase. 
+They are in some case faster than the version just using OpenACC, but sometimes unstable. 
 
 This repository contains programs for conducting particle based fluid simulation
 using MPH-I (Moving Particle Hydrodynamics for Incompressible) method. 
