@@ -2,7 +2,6 @@
 Dt				5.0e-4
 OutputInterval			2.0e-1
 VtkOutputInterval		5.0e-3
-TypeOutput				1	1	1	1
 EndTime			5.0e-1
 RadiusRatioA                    3.5
 RadiusRatioP                    1.75
@@ -10,11 +9,11 @@ RadiusRatioV                    3.5
 Density							2.0e+3		2.0e+3		2.0e+3		2.0e+3
 BulkModulus						1.0e+8		1.0e+8		1.0e+8		1.0e+8
 BulkViscosity					5.0e+5		5.0e+5		5.0e+5		5.0e+5
-ShearViscosity					1.0e+1		1.0e+1		1.0e+1		1.0e+1
-SolidViscosity					5.0e+3		5.0e+3		5.0e+3		0.001
-BaseYieldStress					2.0e+1		2.0e+1		2.0e+1		2.0e+1
-FrictionAngle					45			45			45			45
-PlasticViscosity				2.5			2.5			2.5			0.001
+PseudoplasticFlowBehaviorIndexN			1.0			1.0			1.0			1.0
+PseudoplasticFlowConsistencyIndexK		2.5			2.5			2.5			2.5
+PapanastasiouRegularizationIndexM		200.0		200.0		200.0		200.0
+MohrCoulombInterceptC					20.0		20.0		20.0		20.0		
+MohrCoulombFrictionAnglePhi				45.0		45.0		45.0		45.0
 SurfaceTension					0.000		0.000		0.000		0.000
 InteractionRatio(Type0)			1.0			1.0			1.0			1.0
 InteractionRatio(Type1)			1.0			1.0			1.0			1.0
@@ -23,4 +22,5 @@ InteractionRatio(Type3)			1.0			1.0			1.0			1.0
 Gravity                         0.0  -10.0   0.0
 Wall2    Center 0.0 0.0 0.0    Velocity 0.0 0.0 0.0    Omega 0.0 0.0 0.0
 Wall3    Center 0.0 0.0 0.0    Velocity 0.0 0.0 0.2    Omega 0.0 0.0 0.0
+
 

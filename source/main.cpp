@@ -12,6 +12,8 @@
 //     [3] CPM 9 (2022) 265-276,     https://doi.org/10.1007/s40571-021-00408-y                   //
 //     [4] CMAME 385 (2021) 114072,  https://doi.org/10.1016/j.cma.2021.114072                    //
 //     [5] JSCES Paper No.20210016,  https://doi.org/10.11421/jsces.2021.20210016                 //
+//     [6] CPM (2023),               https://doi.org/10.1007/s40571-023-00636-4                   //
+//    (Please cite the references above when you make a publication using this program)           //
 //    Copyright (c) 2022                                                                          //
 //    Masahiro Kondo & National Institute of Advanced Industrial Science and Technology (AIST)    //
 //================================================================================================//
@@ -42,10 +44,8 @@ const double DOUBLE_ZERO[32]={0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0,
 using namespace std;
 //#define TWO_DIMENSIONAL
 //#define CONVERGENCE_CHECK
-
-// 20230514 added by Masahiro Kondo for Bingham calculation
-#define BINGHAM
-
+#define MULTIGRID_SOLVER
+#define _BINGHAM_
 
 #define DIM 3
 
@@ -79,8 +79,6 @@ static double DomainWidth[DIM];
 
 #define Mod(x,w) ((x)-(w)*floor((x)/(w)))   // mod 
 
-
-#define MAX_NEIGHBOR_COUNT 512
 // Particle
 static int ParticleCount;
 static int *ParticleIndex;                // original particle id
@@ -91,14 +89,20 @@ static double (*Velocity)[DIM];           // momentum
 static double (*Force)[DIM];              // total force acting on the particle
 static int (*NeighborFluidCount);             // [ParticleCount]
 static int (*NeighborCount);                  // [ParticleCount]
-static int (*Neighbor)[MAX_NEIGHBOR_COUNT];   // [ParticleCount]
 static int (*NeighborCountP);                 // [ParticleCount]
-static int (*NeighborP)[MAX_NEIGHBOR_COUNT];  // [ParticleCount]
+static long int (*NeighborPtr);           // [ParticleCount+1];
+static int          (*NeighborInd);           // [ParticleCount x NeighborCount]
+static long int   NeighborIndCount;
+static long int (*NeighborPtrP);           // [ParticleCount+1];
+static int          (*NeighborIndP);           // [ParticleCount x NeighborCount]
+static long int   NeighborIndCountP;
 static int    (*TmpIntScalar);                // [ParticleCount] to sort with cellId
 static double (*TmpDoubleScalar);             // [ParticleCount]
 static double (*TmpDoubleVector)[DIM];        // [ParticleCount]
 #pragma acc declare create(ParticleCount,ParticleIndex,Property,Mass,Position,Velocity,Force)
-#pragma acc declare create(NeighborFluidCount,NeighborCount,Neighbor,NeighborCountP,NeighborP)
+#pragma acc declare create(NeighborFluidCount,NeighborCount,NeighborCountP)
+#pragma acc declare create(NeighborPtr,NeighborInd,NeighborIndCount)
+#pragma acc declare create(NeighborPtrP, NeighborIndP, NeighborIndCountP)
 #pragma acc declare create(TmpIntScalar,TmpDoubleScalar,TmpDoubleVector)
 
 
@@ -111,7 +115,7 @@ static double (*TmpDoubleVector)[DIM];        // [ParticleCount]
 
 static int PowerParticleCount;
 static int ParticleCountPower;                   
-static double CellWidth = 0.0;
+static double CellWidth[DIM];
 static int CellCount[DIM];
 static int TotalCellCount = 0;       // CellCount[0]*CellCount[1]*CellCount[2]
 static int *CellFluidParticleBegin;  // [CellCounts+1]// beginning of fluid particles in the cell
@@ -126,12 +130,24 @@ static int *CellParticle;            // array of current particle id in the cell
 static double Density[TYPE_COUNT];
 static double BulkModulus[TYPE_COUNT];
 static double BulkViscosity[TYPE_COUNT];
+#pragma acc declare create(Density,BulkModulus,BulkViscosity)
+#ifdef _BINGHAM_  //20231128 modified
+static double PseudoplasticFlowBehaviorIndexN[TYPE_COUNT];
+static double PseudoplasticFlowConsistencyIndexK[TYPE_COUNT];
+static double PapanastasiouRegularizationIndexM[TYPE_COUNT];
+static double MohrCoulombInterceptC[TYPE_COUNT];
+static double MohrCoulombFrictionAnglePhi[TYPE_COUNT];
+#pragma acc declare create(PseudoplasticFlowBehaviorIndexN, PseudoplasticFlowConsistencyIndexK, PapanastasiouRegularizationIndexM)
+#pragma acc declare create(MohrCoulombInterceptC, MohrCoulombFrictionAnglePhi)
+#else
 static double ShearViscosity[TYPE_COUNT];
+#pragma acc declare create(ShearViscosity)
+#endif
 static double SurfaceTension[TYPE_COUNT];
 static double CofA[TYPE_COUNT];   // coefficient for attractive pressure
 static double CofK;               // coefficinet (ratio) for diffuse interface thickness normalized by ParticleSpacing
 static double InteractionRatio[TYPE_COUNT][TYPE_COUNT];
-#pragma acc declare create(Density,BulkModulus,BulkViscosity,ShearViscosity,SurfaceTension,CofA,CofK,InteractionRatio)
+#pragma acc declare create(SurfaceTension,CofA,CofK,InteractionRatio)
 
 
 // Fluid
@@ -152,28 +168,10 @@ static double *Lambda;          // viscosity coefficient for bulk
 static double *Kappa;           // bulk modulus
 #pragma acc declare create(FluidParticleBegin,FluidParticleEnd,DensityA,GravityCenter,PressureA,VolStrainP,DivergenceP,PressureP)
 #pragma acc declare create(VirialPressureAtParticle,VirialPressureInsideRadius,VirialStressAtParticle,Mu,Lambda,Kappa)
-
-// 20230514 added by Masahiro Kondo for Bingham calculation
-#ifdef BINGHAM
-static double SolidViscosity[TYPE_COUNT];
-static double BaseYieldStress[TYPE_COUNT];
-static double FrictionAngle[TYPE_COUNT];
-static double PlasticViscosity[TYPE_COUNT];
-static double *MuS;    // SolidViscosity
-static double *SigY;   // YeildStress
-static double *MuP;    // PlasticViscosity;
-#pragma acc declare create(SolidViscosity,BaseYieldStress,FrictionAngle,PlasticViscosity,MuS,SigY,MuP)
-#pragma acc routine seq
-inline double shearviscosity( const double strainrate, const double solidviscosity, const double yieldstress, const double plasticviscosity )
-{
-	const double yieldrate = yieldstress/solidviscosity;
-	if(strainrate<yieldrate){
-		return solidviscosity;
-	}
-	else{
-		return (yieldstress+(strainrate-yieldrate)*plasticviscosity)/strainrate;
-	}
-}
+#ifdef _BINGHAM_
+static double *YieldStress;
+static double *ShearRate;
+#pragma acc declare create(YieldStress,ShearRate)
 #endif
 
 static double Gravity[DIM] = {0.0,0.0,0.0};
@@ -205,6 +203,7 @@ static void calculatePeriodicBoundary();
 static void resetForce();
 static void calculateCellParticle( void );
 static void calculateNeighbor( void );
+static void freeNeighbor( void );
 static void calculatePhysicalCoefficients( void );
 static void calculateDensityA();
 static void calculatePressureA();
@@ -373,34 +372,18 @@ int main(int argc, char *argv[])
     initializeWall();
     initializeDomain();
 	
-//	#pragma acc enter data create(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
-//	#pragma acc enter data create(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
-//	#pragma acc enter data create(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
-//	#pragma acc enter data create(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
-//	#pragma acc enter data create(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
-//	#pragma acc enter data create(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
-//	#pragma acc enter data create(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
-//	#pragma acc enter data create(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
-//	#pragma acc enter data create(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
-//	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
-//	#pragma acc enter data create(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
-//	#pragma acc enter data create(FluidParticleBegin,FluidParticleEnd)
-//	#pragma acc enter data create(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
-//	#pragma acc enter data create(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
-//	#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
-//	#pragma acc enter data create(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
-//	#pragma acc enter data create(Gravity[0:DIM])
-//	#pragma acc enter data create(WallParticleBegin,WallParticleEnd)
-//	#pragma acc enter data create(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
-//	#pragma acc enter data create(MaxRadius,RadiusA,RadiusG,RadiusP,RadiusV,Swa,Swg,Swp,Swv,N0a,N0p,R2g)
-	
 	#pragma acc update device(ParticleSpacing,ParticleVolume,Dt,DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
 	#pragma acc update device(ParticleCount,ParticleIndex[0:ParticleCount],Property[0:ParticleCount],Mass[0:ParticleCount])
-	#pragma acc update device(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
-	#pragma acc update device(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
-	#pragma acc update device(SolidViscosity[0:TYPE_COUNT],BaseYieldStress[0:TYPE_COUNT],FrictionAngle[0:TYPE_COUNT],PlasticViscosity[0:TYPE_COUNT])
+	#pragma acc update device(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT])
+	#ifdef _BINGHAM_
+	#pragma acc update device(PseudoplasticFlowBehaviorIndexN[0:TYPE_COUNT], PseudoplasticFlowConsistencyIndexK[0:TYPE_COUNT], PapanastasiouRegularizationIndexM[0:TYPE_COUNT])
+	#pragma acc update device(MohrCoulombInterceptC[0:TYPE_COUNT], MohrCoulombFrictionAnglePhi[0:TYPE_COUNT])
+	#else
+	#pragma acc update device(ShearViscosity[0:TYPE_COUNT])
+	#endif
+	#pragma acc update device(SurfaceTension[0:TYPE_COUNT],CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
 	#pragma acc update device(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
-	#pragma acc update device(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
+	#pragma acc update device(PowerParticleCount,ParticleCountPower,CellWidth[0:DIM],CellCount[0:DIM],TotalCellCount)
 	#pragma acc update device(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
 	#pragma acc update device(Gravity[0:DIM])
 	#pragma acc update device(WallCenter[0:WALL_END][0:DIM],WallVelocity[0:WALL_END][0:DIM],WallOmega[0:WALL_END][0:DIM],WallRotation[0:WALL_END][0:DIM][0:DIM])
@@ -412,6 +395,7 @@ int main(int argc, char *argv[])
 	calculateGravityCenter();
 	calculateDensityP();
     writeVtkFile("output.vtk");
+	freeNeighbor();
 	
 	{
         time_t t=time(NULL);
@@ -454,10 +438,13 @@ int main(int argc, char *argv[])
 		calculateDensityP();
 		
 		// calculate physical coefficient (viscosity, bulk modulus, bulk viscosity..)
-		calculateDivergenceP();
-    	calculatePressureP();
 		calculatePhysicalCoefficients();
-		
+//		{
+//		    char filename [256];
+//            sprintf(filename,"physicalcof_%04d.vtk",iStep);
+//            writeVtkFile(filename);
+//            log_printf("@ Vtk Output Time : %e\n", Time );
+//		}
 		// calculate P(s,rho) s:fixed
 		calculatePressureA();
 		
@@ -479,17 +466,34 @@ int main(int argc, char *argv[])
 		multiplyMatrixC();
 		freeMatrixC();
 		cTill = clock(); cImplicitMulti += (cTill-cFrom); cFrom = cTill;
+		#ifdef MULTIGRID_SOLVER
 		calculateMultiGridMatrix();
 		cTill = clock(); cPrecondition += (cTill-cFrom); cFrom = cTill;
+		#endif
 		solveWithConjugatedGradient();
+		#ifdef MULTIGRID_SOLVER
 		freeMultiGridMatrix();
+		#endif
 		freeMatrixA();
 		cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;
 		
+		#ifdef _BINGHAM_
+			calculateDivergenceP();	// For displaying "Force"
+    		calculatePressureP();	// For displaying "Force"
+        	calculateViscosityV();	// For displaying "Force"
+			calculateVirialStressAtParticle();
+			calculateVirialPressureInsideRadius();
+		#endif
 		
 		if( Time + 1.0e-5*Dt >= VtkOutputNext ){
-        	calculateViscosityV();
-    		calculateVirialStressAtParticle();
+			#ifndef _BINGHAM_
+    		calculateDivergenceP();	// For displaying "DivergenceP"
+    		calculatePressureP();	// For displaying "PressureP"
+        	calculateViscosityV();	// For displaying "Force"
+			calculateVirialStressAtParticle();		// For displaying "VirialPressure"
+			calculateVirialPressureInsideRadius()	// For displaying "VirialPressureInsideRadius"
+			#endif
+			
         	cTill = clock(); cVirial += (cTill-cFrom); cFrom = cTill;
             char filename [256];
             sprintf(filename,vtkfilename,iStep);
@@ -499,6 +503,8 @@ int main(int argc, char *argv[])
 			cTill = clock(); cOther += (cTill-cFrom); cFrom = cTill;
 
         }
+		
+		freeNeighbor();
 
         Time += Dt;
         iStep++;
@@ -533,10 +539,10 @@ int main(int argc, char *argv[])
 //	#pragma acc exit data delete(Density[0:TYPE_COUNT],BulkModulus[0:TYPE_COUNT],BulkViscosity[0:TYPE_COUNT],ShearViscosity[0:TYPE_COUNT],SurfaceTension[0:TYPE_COUNT])
 //	#pragma acc exit data delete(CofA[0:TYPE_COUNT],CofK,InteractionRatio[0:TYPE_COUNT][0:TYPE_COUNT])
 //	#pragma acc exit data delete(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
-//	#pragma acc exit data delete(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
+//	#pragma acc exit data delete(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount],NeighborPtr[0:PowerParticleCount],NeighborInd[0:NeighborIndCount])
 //	#pragma acc exit data delete(NeighborCountP[0:ParticleCount],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT])
 //	#pragma acc exit data delete(TmpIntScalar[0:ParticleCount],TmpDoubleScalar[0:ParticleCount],TmpDoubleVector[0:ParticleCount][0:DIM])
-//	#pragma acc exit data delete(PowerParticleCount,ParticleCountPower,CellWidth,CellCount[0:DIM],TotalCellCount)
+//	#pragma acc exit data delete(PowerParticleCount,ParticleCountPower,CellWidth[0:DIM],CellCount[0:DIM],TotalCellCount)
 //	#pragma acc exit data delete(CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount])
 //	#pragma acc exit data delete(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
 //	#pragma acc exit data delete(FluidParticleBegin,FluidParticleEnd)
@@ -577,14 +583,16 @@ static void readDataFile(char *filename)
             else if(sscanf(buf," Density %lf %lf %lf %lf",&Density[0],&Density[1],&Density[2],&Density[3])==4){mode=reading_global;}
             else if(sscanf(buf," BulkModulus %lf %lf %lf %lf",&BulkModulus[0],&BulkModulus[1],&BulkModulus[2],&BulkModulus[3])==4){mode=reading_global;}
             else if(sscanf(buf," BulkViscosity %lf %lf %lf %lf",&BulkViscosity[0],&BulkViscosity[1],&BulkViscosity[2],&BulkViscosity[3])==4){mode=reading_global;}
+        	#ifdef _BINGHAM_
+        	else if(sscanf(buf," PseudoplasticFlowBehaviorIndexN %lf %lf %lf %lf",&PseudoplasticFlowBehaviorIndexN[0],&PseudoplasticFlowBehaviorIndexN[1],&PseudoplasticFlowBehaviorIndexN[2],&PseudoplasticFlowBehaviorIndexN[3])==4){mode=reading_global;}
+            else if(sscanf(buf," PseudoplasticFlowConsistencyIndexK %lf %lf %lf %lf",&PseudoplasticFlowConsistencyIndexK[0],&PseudoplasticFlowConsistencyIndexK[1],&PseudoplasticFlowConsistencyIndexK[2],&PseudoplasticFlowConsistencyIndexK[3])==4){mode=reading_global;}
+            else if(sscanf(buf," PapanastasiouRegularizationIndexM %lf %lf %lf %lf",&PapanastasiouRegularizationIndexM[0],&PapanastasiouRegularizationIndexM[1],&PapanastasiouRegularizationIndexM[2],&PapanastasiouRegularizationIndexM[3])==4){mode=reading_global;}
+            else if(sscanf(buf," MohrCoulombInterceptC %lf %lf %lf %lf",&MohrCoulombInterceptC[0],&MohrCoulombInterceptC[1],&MohrCoulombInterceptC[2],&MohrCoulombInterceptC[3])==4){mode=reading_global;}
+            else if(sscanf(buf," MohrCoulombFrictionAnglePhi %lf %lf %lf %lf",&MohrCoulombFrictionAnglePhi[0],&MohrCoulombFrictionAnglePhi[1],&MohrCoulombFrictionAnglePhi[2],&MohrCoulombFrictionAnglePhi[3])==4){mode=reading_global;}
+            
+        	#else
             else if(sscanf(buf," ShearViscosity %lf %lf %lf %lf",&ShearViscosity[0],&ShearViscosity[1],&ShearViscosity[2],&ShearViscosity[3])==4){mode=reading_global;}
-        	// 20230514 added by Masahiro Kondo for Bingham calculation
-        	#ifdef BINGHAM
-        	else if(sscanf(buf," SolidViscosity %lf %lf %lf %lf",&SolidViscosity[0],&SolidViscosity[1],&SolidViscosity[2],&SolidViscosity[3])==4){mode=reading_global;}
-            else if(sscanf(buf," BaseYieldStress %lf %lf %lf %lf",&BaseYieldStress[0],&BaseYieldStress[1],&BaseYieldStress[2],&BaseYieldStress[3])==4){mode=reading_global;}
-            else if(sscanf(buf," FrictionAngle %lf %lf %lf %lf",&FrictionAngle[0],&FrictionAngle[1],&FrictionAngle[2],&FrictionAngle[3])==4){mode=reading_global;}
-            else if(sscanf(buf," PlasticViscosity %lf %lf %lf %lf",&PlasticViscosity[0],&PlasticViscosity[1],&PlasticViscosity[2],&PlasticViscosity[3])==4){mode=reading_global;}
-			#endif
+            #endif
         	else if(sscanf(buf," SurfaceTension %lf %lf %lf %lf",&SurfaceTension[0],&SurfaceTension[1],&SurfaceTension[2],&SurfaceTension[3])==4){mode=reading_global;}
             else if(sscanf(buf," InteractionRatio(Type0) %lf %lf %lf %lf",&InteractionRatio[0][0],&InteractionRatio[0][1],&InteractionRatio[0][2],&InteractionRatio[0][3])==4){mode=reading_global;}
             else if(sscanf(buf," InteractionRatio(Type1) %lf %lf %lf %lf",&InteractionRatio[1][0],&InteractionRatio[1][1],&InteractionRatio[1][2],&InteractionRatio[1][3])==4){mode=reading_global;}
@@ -605,136 +613,149 @@ static void readDataFile(char *filename)
 static void readGridFile(char *filename)
 {
     FILE *fp=fopen(filename,"r");
-    char buf[1024];   
-
-    try{
-        if(fgets(buf,sizeof(buf),fp)==NULL)throw;
-        sscanf(buf,"%lf",&Time);
-        if(fgets(buf,sizeof(buf),fp)==NULL)throw;
-        sscanf(buf,"%d  %lf  %lf %lf %lf  %lf %lf %lf",
-               &ParticleCount,
-               &ParticleSpacing,
-               &DomainMin[0], &DomainMax[0],
-               &DomainMin[1], &DomainMax[1],
-               &DomainMin[2], &DomainMax[2]);
-#ifdef TWO_DIMENSIONAL
-        ParticleVolume = ParticleSpacing*ParticleSpacing;
-#else
-	ParticleVolume = ParticleSpacing*ParticleSpacing*ParticleSpacing;
-#endif
+	char buf[1024];   
+	
+	try{
+		if(fgets(buf,sizeof(buf),fp)==NULL)throw;
+		sscanf(buf,"%lf",&Time);
+		if(fgets(buf,sizeof(buf),fp)==NULL)throw;
+		sscanf(buf,"%d  %lf  %lf %lf %lf  %lf %lf %lf",
+			&ParticleCount,
+			&ParticleSpacing,
+			&DomainMin[0], &DomainMax[0],
+			&DomainMin[1], &DomainMax[1],
+			&DomainMin[2], &DomainMax[2]);
+		#ifdef TWO_DIMENSIONAL
+		ParticleVolume = ParticleSpacing*ParticleSpacing;
+		#else
+		ParticleVolume = ParticleSpacing*ParticleSpacing*ParticleSpacing;
+		#endif
 		
-    	ParticleIndex = (int *)malloc(ParticleCount*sizeof(int));
-        Property = (int *)malloc(ParticleCount*sizeof(int));
-        Position = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
-        Velocity = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
-        DensityA = (double *)malloc(ParticleCount*sizeof(double));
-    	GravityCenter = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
-        PressureA = (double *)malloc(ParticleCount*sizeof(double));
-        VolStrainP = (double *)malloc(ParticleCount*sizeof(double));
-    	DivergenceP = (double *)malloc(ParticleCount*sizeof(double));
-        PressureP = (double *)malloc(ParticleCount*sizeof(double));
-        VirialPressureAtParticle = (double *)malloc(ParticleCount*sizeof(double));
-        VirialPressureInsideRadius = (double *)malloc(ParticleCount*sizeof(double));
-    	VirialStressAtParticle = (double (*) [DIM][DIM])malloc(ParticleCount*sizeof(double [DIM][DIM]));
-    	Mass = (double (*))malloc(ParticleCount*sizeof(double));
-        Force = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
-        Mu = (double (*))malloc(ParticleCount*sizeof(double));
-    	Lambda = (double (*))malloc(ParticleCount*sizeof(double));
-    	Kappa = (double (*))malloc(ParticleCount*sizeof(double));
-    	// 20230514 added by Masahiro Kondo for Bingham calculation
-        #ifdef BINGHAM
-    	MuS = (double (*))malloc(ParticleCount*sizeof(double));
-    	SigY= (double (*))malloc(ParticleCount*sizeof(double));
-    	MuP = (double (*))malloc(ParticleCount*sizeof(double));
-    	#endif
-
-    	TmpIntScalar = (int *)malloc(ParticleCount*sizeof(int));
-    	TmpDoubleScalar = (double *)malloc(ParticleCount*sizeof(double));
-    	TmpDoubleVector = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
-
-        NeighborFluidCount = (int *)malloc(ParticleCount*sizeof(int));
-    	NeighborCount  = (int *)malloc(ParticleCount*sizeof(int));
-    	Neighbor       = (int (*)[MAX_NEIGHBOR_COUNT])malloc(ParticleCount*sizeof(int [MAX_NEIGHBOR_COUNT]));
-    	NeighborCountP = (int *)malloc(ParticleCount*sizeof(int));
-    	NeighborP      = (int (*)[MAX_NEIGHBOR_COUNT])malloc(ParticleCount*sizeof(int [MAX_NEIGHBOR_COUNT]));
-    	
-    	#pragma acc enter data create(ParticleIndex[0:ParticleCount]) attach(ParticleIndex)
-    	#pragma acc enter data create(Property[0:ParticleCount]) attach(Property)
-    	#pragma acc enter data create(Position[0:ParticleCount][0:DIM]) attach(Position)
-    	#pragma acc enter data create(Velocity[0:ParticleCount][0:DIM]) attach(Velocity)
-    	#pragma acc enter data create(DensityA[0:ParticleCount]) attach(DensityA)
-    	#pragma acc enter data create(GravityCenter[0:ParticleCount][0:DIM]) attach(GravityCenter)
-    	#pragma acc enter data create(PressureA[0:ParticleCount]) attach(PressureA)
-    	#pragma acc enter data create(VolStrainP[0:ParticleCount]) attach(VolStrainP)
-    	#pragma acc enter data create(DivergenceP[0:ParticleCount]) attach(DivergenceP)
-   		#pragma acc enter data create(PressureP[0:ParticleCount]) attach(PressureP)
-    	#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount]) attach(VirialPressureAtParticle)
-    	#pragma acc enter data create(VirialPressureInsideRadius[0:ParticleCount]) attach(VirialPressureInsideRadius)
-    	#pragma acc enter data create(VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM]) attach(VirialStressAtParticle)
-    	#pragma acc enter data create(Mass[0:ParticleCount]) attach(Mass)
-    	#pragma acc enter data create(Force[0:ParticleCount][0:DIM]) attach(Force)
-    	#pragma acc enter data create(Mu[0:ParticleCount]) attach(Mu)
-    	#pragma acc enter data create(Lambda[0:ParticleCount]) attach(Lambda)
-    	#pragma acc enter data create(Kappa[0:ParticleCount]) attach(Kappa)
-    	// 20230514 added by Masahiro Kondo for Bingham calculation
-        #ifdef BINGHAM
-    	#pragma acc enter data create(MuS[0:ParticleCount]) attach(MuS)
-    	#pragma acc enter data create(SigY[0:ParticleCount]) attach(SigY)
-    	#pragma acc enter data create(MuP[0:ParticleCount]) attach(MuP)
-    	#endif
-   
-    	
-    	#pragma acc enter data create(TmpIntScalar[0:ParticleCount]) attach(TmpIntScalar)
-    	#pragma acc enter data create(TmpDoubleScalar[0:ParticleCount]) attach(TmpDoubleScalar)
-    	#pragma acc enter data create(TmpDoubleVector[0:ParticleCount][0:DIM]) attach(TmpDoubleVector)
-    	
-    	#pragma acc enter data create(NeighborFluidCount[0:ParticleCount]) attach(NeighborFluidCount)
-    	#pragma acc enter data create(NeighborCount[0:ParticleCount]) attach(NeighborCount)
-    	#pragma acc enter data create(Neighbor[0:ParticleCount][0:MAX_NEIGHBOR_COUNT]) attach(Neighbor)
-    	#pragma acc enter data create(NeighborCountP[0:ParticleCount]) attach(NeighborCountP)
-    	#pragma acc enter data create(NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT]) attach(NeighborP)
-
-        double (*q)[DIM] = Position;
-        double (*v)[DIM] = Velocity;
-
-        for(int iP=0;iP<ParticleCount;++iP){
-            if(fgets(buf,sizeof(buf),fp)==NULL)break;
-            sscanf(buf,"%d  %lf %lf %lf  %lf %lf %lf",
-                   &Property[iP],
-                   &q[iP][0],&q[iP][1],&q[iP][2],
-                   &v[iP][0],&v[iP][1],&v[iP][2]
-                   );
-        }
-    }catch(...){};
-
-    fclose(fp);
+		ParticleIndex = (int *)malloc(ParticleCount*sizeof(int));
+		Property = (int *)malloc(ParticleCount*sizeof(int));
+		Position = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
+		Velocity = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
+		DensityA = (double *)malloc(ParticleCount*sizeof(double));
+		GravityCenter = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
+		PressureA = (double *)malloc(ParticleCount*sizeof(double));
+		VolStrainP = (double *)malloc(ParticleCount*sizeof(double));
+		DivergenceP = (double *)malloc(ParticleCount*sizeof(double));
+		PressureP = (double *)malloc(ParticleCount*sizeof(double));
+		VirialPressureAtParticle = (double *)malloc(ParticleCount*sizeof(double));
+		VirialPressureInsideRadius = (double *)malloc(ParticleCount*sizeof(double));
+		VirialStressAtParticle = (double (*) [DIM][DIM])malloc(ParticleCount*sizeof(double [DIM][DIM]));
+		Mass = (double (*))malloc(ParticleCount*sizeof(double));
+		Force = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
+		Mu = (double (*))malloc(ParticleCount*sizeof(double));
+		Lambda = (double (*))malloc(ParticleCount*sizeof(double));
+		Kappa = (double (*))malloc(ParticleCount*sizeof(double));
+		
+		#ifdef _BINGHAM_
+		YieldStress = (double (*))malloc(ParticleCount*sizeof(double));
+		ShearRate = (double (*))malloc(ParticleCount*sizeof(double));
+		#endif
+		
+		
+		TmpIntScalar = (int *)malloc(ParticleCount*sizeof(int));
+		TmpDoubleScalar = (double *)malloc(ParticleCount*sizeof(double));
+		TmpDoubleVector = (double (*)[DIM])malloc(ParticleCount*sizeof(double [DIM]));
+		
+		NeighborFluidCount = (int *)malloc(ParticleCount*sizeof(int));
+		NeighborCount  = (int *)malloc(ParticleCount*sizeof(int));
+		NeighborCountP = (int *)malloc(ParticleCount*sizeof(int));
+		
+		#pragma acc enter data create(ParticleIndex[0:ParticleCount]) attach(ParticleIndex)
+		#pragma acc enter data create(Property[0:ParticleCount]) attach(Property)
+		#pragma acc enter data create(Position[0:ParticleCount][0:DIM]) attach(Position)
+		#pragma acc enter data create(Velocity[0:ParticleCount][0:DIM]) attach(Velocity)
+		#pragma acc enter data create(DensityA[0:ParticleCount]) attach(DensityA)
+		#pragma acc enter data create(GravityCenter[0:ParticleCount][0:DIM]) attach(GravityCenter)
+		#pragma acc enter data create(PressureA[0:ParticleCount]) attach(PressureA)
+		#pragma acc enter data create(VolStrainP[0:ParticleCount]) attach(VolStrainP)
+		#pragma acc enter data create(DivergenceP[0:ParticleCount]) attach(DivergenceP)
+		#pragma acc enter data create(PressureP[0:ParticleCount]) attach(PressureP)
+		#pragma acc enter data create(VirialPressureAtParticle[0:ParticleCount]) attach(VirialPressureAtParticle)
+		#pragma acc enter data create(VirialPressureInsideRadius[0:ParticleCount]) attach(VirialPressureInsideRadius)
+		#pragma acc enter data create(VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM]) attach(VirialStressAtParticle)
+		#pragma acc enter data create(Mass[0:ParticleCount]) attach(Mass)
+		#pragma acc enter data create(Force[0:ParticleCount][0:DIM]) attach(Force)
+		#pragma acc enter data create(Mu[0:ParticleCount]) attach(Mu)
+		#pragma acc enter data create(Lambda[0:ParticleCount]) attach(Lambda)
+		#pragma acc enter data create(Kappa[0:ParticleCount]) attach(Kappa)
+		
+		#ifdef _BINGHAM_
+		#pragma acc enter data create(YieldStress[0:ParticleCount]) attach(YieldStress)
+		#pragma acc enter data create(ShearRate[0:ParticleCount]) attach(ShearRate)
+		#endif
+		
+		#pragma acc enter data create(TmpIntScalar[0:ParticleCount]) attach(TmpIntScalar)
+		#pragma acc enter data create(TmpDoubleScalar[0:ParticleCount]) attach(TmpDoubleScalar)
+		#pragma acc enter data create(TmpDoubleVector[0:ParticleCount][0:DIM]) attach(TmpDoubleVector)
+		
+		#pragma acc enter data create(NeighborFluidCount[0:ParticleCount]) attach(NeighborFluidCount)
+		#pragma acc enter data create(NeighborCount[0:ParticleCount]) attach(NeighborCount)
+		#pragma acc enter data create(NeighborCountP[0:ParticleCount]) attach(NeighborCountP)
+		
+		// calculate minimun PowerParticleCount which sataisfies  ParticleCount < PowerParticleCount = pow(2,ParticleCountPower) 
+		ParticleCountPower=0;
+		while((ParticleCount>>ParticleCountPower)!=0){
+			++ParticleCountPower;
+		}
+		PowerParticleCount = (1<<ParticleCountPower);
+		fprintf(stderr,"memory for CellIndex and CellParticle %d\n", PowerParticleCount );
+		CellIndex    = (int *)malloc( (PowerParticleCount) * sizeof(int) );
+		CellParticle = (int *)malloc( (PowerParticleCount) * sizeof(int) );
+		#pragma acc enter data create(CellIndex[0:PowerParticleCount]) attach(CellIndex)
+		#pragma acc enter data create(CellParticle[0:PowerParticleCount]) attach(CellParticle)
+		
+		NeighborPtr  = (long int *)malloc( (PowerParticleCount) * sizeof(long int) );
+		NeighborPtrP = (long int *)malloc( (PowerParticleCount) * sizeof(long int) );
+		#pragma acc enter data create(NeighborPtr[0:PowerParticleCount]) 
+		#pragma acc enter data create(NeighborPtrP[0:PowerParticleCount])
+		#pragma acc update device(ParticleCountPower,PowerParticleCount)
+		
+		
+		double (*q)[DIM] = Position;
+		double (*v)[DIM] = Velocity;
+		
+		for(int iP=0;iP<ParticleCount;++iP){
+			if(fgets(buf,sizeof(buf),fp)==NULL)break;
+			sscanf(buf,"%d  %lf %lf %lf  %lf %lf %lf",
+				&Property[iP],
+				&q[iP][0],&q[iP][1],&q[iP][2],
+				&v[iP][0],&v[iP][1],&v[iP][2]
+			);
+		}
+	}catch(...){};
+	
+	fclose(fp);
 	
 	// set begin & end
 	FluidParticleBegin=0;FluidParticleEnd=0;WallParticleBegin=0;WallParticleEnd=0;
-    for(int iP=0;iP<ParticleCount;++iP){
-    	if(FLUID_BEGIN<=Property[iP] && Property[iP]<FLUID_END && WALL_BEGIN<=Property[iP+1] && Property[iP+1]<WALL_END){
-    		FluidParticleEnd=iP+1;
-    		WallParticleBegin=iP+1;
-    	}
-    	if(FLUID_BEGIN<=Property[iP] && Property[iP]<FLUID_END && iP+1==ParticleCount){
-    		FluidParticleEnd=iP+1;
-    	}
-    	if(WALL_BEGIN<=Property[iP] && Property[iP]<WALL_END && iP+1==ParticleCount){
-    		WallParticleEnd=iP+1;
-    	}
-    }
+	for(int iP=0;iP<ParticleCount;++iP){
+		if(FLUID_BEGIN<=Property[iP] && Property[iP]<FLUID_END && WALL_BEGIN<=Property[iP+1] && Property[iP+1]<WALL_END){
+			FluidParticleEnd=iP+1;
+			WallParticleBegin=iP+1;
+		}
+		if(FLUID_BEGIN<=Property[iP] && Property[iP]<FLUID_END && iP+1==ParticleCount){
+			FluidParticleEnd=iP+1;
+		}
+		if(WALL_BEGIN<=Property[iP] && Property[iP]<WALL_END && iP+1==ParticleCount){
+			WallParticleEnd=iP+1;
+		}
+	}
 	
 	#pragma acc update device(ParticleCount,ParticleSpacing,DomainMin[0:DIM],DomainMax[0:DIM],ParticleVolume)
 	#pragma acc update device(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM])
 	#pragma acc update device(FluidParticleBegin,FluidParticleEnd,WallParticleBegin,WallParticleEnd)
 	
-    return;
+	return;
 }
 
 static void writeProfFile(char *filename)
 {
-    FILE *fp=fopen(filename,"w");
-
+	FILE *fp=fopen(filename,"w");
+	
     fprintf(fp,"%e\n",Time);
     fprintf(fp,"%d %e %e %e %e %e %e %e\n",
             ParticleCount,
@@ -764,15 +785,18 @@ static void writeVtkFile(char *filename)
 //	#pragma acc update host(Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM])
 //	#pragma acc update host(DensityA[0:ParticleCount],GravityCenter[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
 	#pragma acc update host(VolStrainP[0:ParticleCount],DivergenceP[0:ParticleCount],PressureP[0:ParticleCount])
-	#pragma acc update host(SigY[0:ParticleCount])
-	#pragma acc update host(VirialPressureAtParticle[0:ParticleCount])
-//	#pragma acc update host(VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
-//	#pragma acc update host(Lambda[0:ParticleCount],Kappa[0:ParticleCount],Mu[0:ParticleCount])
+//	#pragma acc update host(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount],VirialStressAtParticle[0:ParticleCount][0:DIM][0:DIM])
+//	#pragma acc update host(Lambda[0:ParticleCount],Kappa[0:ParticleCount])
+	#pragma acc update host(Mu[0:ParticleCount])
+	#ifdef _BINGHAM_
+	#pragma acc update host(YieldStress[0:ParticleCount],ShearRate[0:ParticleCount])
+	#endif
 //	#pragma acc update host(NeighborFluidCount[0:ParticleCount],NeighborCount[0:ParticleCount])
 //	#pragma acc update host(CellIndex[0:PowerParticleCount],CellParticle[0:PowerParticleCount])
 	
 	// update parameters to be output
-	#pragma acc update host(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],VirialPressureAtParticle[0:ParticleCount])
+	#pragma acc update host(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM])
+	#pragma acc update host(VirialPressureAtParticle[0:ParticleCount],VirialPressureInsideRadius[0:ParticleCount])
 	#pragma acc update host(NeighborCount[0:ParticleCount],Force[0:ParticleCount][0:DIM])
 	
 	const double (*q)[DIM] = Position;
@@ -845,23 +869,17 @@ static void writeVtkFile(char *filename)
 		fprintf(fp, "%e\n", (float)PressureP[iP]);
 	}
 	fprintf(fp, "\n");
-	fprintf(fp, "SCALARS SigY float 1\n");
-	fprintf(fp, "LOOKUP_TABLE default\n");
-	for(int iP=0;iP<ParticleCount;++iP){
-		fprintf(fp, "%e\n", (float)SigY[iP]);
-	}
-	fprintf(fp, "\n");
 	fprintf(fp, "SCALARS VirialPressureAtParticle float 1\n");
 	fprintf(fp, "LOOKUP_TABLE default\n");
 	for(int iP=0;iP<ParticleCount;++iP){
 		fprintf(fp, "%e\n", (float)VirialPressureAtParticle[iP]); // trivial operation is done for 
 	}
 	fprintf(fp, "\n");
-//	fprintf(fp, "SCALARS VirialPressureInsideRadius float 1\n");
-//	fprintf(fp, "LOOKUP_TABLE default\n");
-//	for(int iP=0;iP<ParticleCount;++iP){
-//		fprintf(fp, "%e\n", (float)VirialPressureInsideRadius[iP]); // trivial operation is done for 
-//	}
+	fprintf(fp, "SCALARS VirialPressureInsideRadius float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)VirialPressureInsideRadius[iP]); // trivial operation is done for 
+	}
 //	for(int iD=0;iD<DIM-1;++iD){
 //		for(int jD=0;jD<DIM-1;++jD){
 //			fprintf(fp, "\n");    fprintf(fp, "SCALARS VirialStressAtParticle[%d][%d] float 1\n",iD,jD);
@@ -871,13 +889,27 @@ static void writeVtkFile(char *filename)
 //			}
 //		}
 //	}
-//	fprintf(fp, "\n");
-//	fprintf(fp, "SCALARS Mu float 1\n");
-//	fprintf(fp, "LOOKUP_TABLE default\n");
-//	for(int iP=0;iP<ParticleCount;++iP){
-//		fprintf(fp, "%e\n", (float)Mu[iP]);
-//	}
-//	fprintf(fp, "\n");
+	fprintf(fp, "\n");
+	fprintf(fp, "SCALARS Mu float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)Mu[iP]);
+	}
+	fprintf(fp, "\n");
+	#ifdef _BINGHAM_
+	fprintf(fp, "SCALARS YieldStress float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)YieldStress[iP]);
+	}
+	fprintf(fp, "\n");
+	fprintf(fp, "SCALARS ShearRate float 1\n");
+	fprintf(fp, "LOOKUP_TABLE default\n");
+	for(int iP=0;iP<ParticleCount;++iP){
+		fprintf(fp, "%e\n", (float)ShearRate[iP]);
+	}
+	fprintf(fp, "\n");
+	#endif
 	fprintf(fp, "SCALARS neighbor float 1\n");
 	fprintf(fp, "LOOKUP_TABLE default\n");
 	for(int iP=0;iP<ParticleCount;++iP){
@@ -1042,9 +1074,19 @@ static void initializeFluid()
 	for(int iP=0;iP<ParticleCount;++iP){
 		Lambda[iP]=BulkViscosity[Property[iP]];
 	}
+	
+	#ifdef _BINGHAM_
+	for(int iP=0;iP<ParticleCount;++iP){
+		const double c = MohrCoulombInterceptC[ Property[iP] ];
+		const double m = PapanastasiouRegularizationIndexM[ Property[iP] ];
+		Mu[iP] = c*m;
+	}
+	#else // _BINGHAM_
 	for(int iP=0;iP<ParticleCount;++iP){
 		Mu[iP]=ShearViscosity[Property[iP]];
 	}
+	#endif // _BINGHAM_
+	
 	#ifdef TWO_DIMENSIONAL
 	CofK = 0.350778153;
 	double integN=0.024679383;
@@ -1109,66 +1151,102 @@ static void initializeWall()
 
 static void initializeDomain( void )
 {
+		
 	MaxRadius = ((RadiusA>MaxRadius) ? RadiusA : MaxRadius);
 	MaxRadius = ((2.0*RadiusP>MaxRadius) ? 2.0*RadiusP : MaxRadius);
 	MaxRadius = ((RadiusV>MaxRadius) ? RadiusV : MaxRadius);
 	fprintf(stderr, "MaxRadius = %lf\n", MaxRadius);
-	
-	//CellWidth=ParticleSpacing;
-	CellWidth = ceil(MaxRadius/ParticleSpacing)*ParticleSpacing;
+
+	DomainWidth[0] = DomainMax[0] - DomainMin[0];
+	DomainWidth[1] = DomainMax[1] - DomainMin[1];
+	DomainWidth[2] = DomainMax[2] - DomainMin[2];
 	
 	double cellCount[DIM];
 	
-	cellCount[0] = (DomainMax[0] - DomainMin[0])/CellWidth;
-	cellCount[1] = (DomainMax[1] - DomainMin[1])/CellWidth;
+	cellCount[0] = floor((DomainMax[0] - DomainMin[0])/(MaxRadius));
+	cellCount[1] = floor((DomainMax[1] - DomainMin[1])/(MaxRadius));
 	#ifdef TWO_DIMENSIONAL
 	cellCount[2] = 1;
 	#else
-	cellCount[2] = (DomainMax[2] - DomainMin[2])/CellWidth;
+	cellCount[2] = floor((DomainMax[2] - DomainMin[2])/(MaxRadius));
 	#endif
 	
-	CellCount[0] = (int)ceil(cellCount[0]);
-	CellCount[1] = (int)ceil(cellCount[1]);
-	CellCount[2] = (int)ceil(cellCount[2]);
-	TotalCellCount = CellCount[0]*CellCount[1]*CellCount[2];
-	fprintf(stderr, "TotalCellCount = %d\n", TotalCellCount);
+	CellCount[0] = (int)cellCount[0];
+	CellCount[1] = (int)cellCount[1];
+	CellCount[2] = (int)cellCount[2];
+	TotalCellCount   = cellCount[0]*cellCount[1]*cellCount[2];
+	log_printf("line:%d CellCount[DIM]: %d %d %d\n", __LINE__, CellCount[0], CellCount[1], CellCount[2]);
+	log_printf("line:%d TotalCellCount: %d\n", __LINE__, TotalCellCount);
+	
+	CellWidth[0]=DomainWidth[0]/CellCount[0];
+	CellWidth[1]=DomainWidth[1]/CellCount[1];
+	CellWidth[2]=DomainWidth[2]/CellCount[2];
+	log_printf("line:%d CellWidth[DIM]: %e %e %e\n", __LINE__, CellWidth[0], CellWidth[1], CellWidth[2]);
 
-    if(cellCount[0]!=(double)CellCount[0] || cellCount[1]!=(double)CellCount[1] ||cellCount[2]!=(double)CellCount[2]){
-        fprintf(stderr,"DomainWidth/CellWidth is not integer\n");
-        DomainMax[0] = DomainMin[0] + CellWidth*(double)CellCount[0];
-        DomainMax[1] = DomainMin[1] + CellWidth*(double)CellCount[1];
-        DomainMax[2] = DomainMin[2] + CellWidth*(double)CellCount[2];
-        fprintf(stderr,"Changing the Domain Max to (%e,%e,%e)\n", DomainMax[0], DomainMax[1], DomainMax[2]);
-    }
-    DomainWidth[0] = DomainMax[0] - DomainMin[0];
-    DomainWidth[1] = DomainMax[1] - DomainMin[1];
-    DomainWidth[2] = DomainMax[2] - DomainMin[2];
-
-	CellFluidParticleBegin = (int *)malloc( TotalCellCount * sizeof(int) );
-	CellFluidParticleEnd   = (int *)malloc( TotalCellCount * sizeof(int) );
-	CellWallParticleBegin  = (int *)malloc( TotalCellCount * sizeof(int) );
-	CellWallParticleEnd    = (int *)malloc( TotalCellCount * sizeof(int) );
+	
+	CellFluidParticleBegin = (int *)malloc( (TotalCellCount) * sizeof(int) );
+	CellFluidParticleEnd   = (int *)malloc( (TotalCellCount) * sizeof(int) );
+	CellWallParticleBegin = (int *)malloc( (TotalCellCount) * sizeof(int) );
+	CellWallParticleEnd   = (int *)malloc( (TotalCellCount) * sizeof(int) );
 	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount]) attach(CellFluidParticleBegin)
 	#pragma acc enter data create(CellFluidParticleEnd[0:TotalCellCount]) attach(CellFluidParticleEnd)
 	#pragma acc enter data create(CellWallParticleBegin[0:TotalCellCount]) attach(CellWallParticleBegin)
 	#pragma acc enter data create(CellWallParticleEnd[0:TotalCellCount]) attach(CellWallParticleEnd)
 	
-	// calculate minimun PowerParticleCount which sataisfies  ParticleCount < PowerParticleCount = pow(2,ParticleCountPower) 
-	ParticleCountPower=0;
-	while((ParticleCount>>ParticleCountPower)!=0){
-		++ParticleCountPower;
-	}
-	PowerParticleCount = (1<<ParticleCountPower);
-	fprintf(stderr,"memory for CellIndex and CellParticle %d\n", PowerParticleCount );
-	CellIndex    = (int *)malloc( (PowerParticleCount) * sizeof(int) );
-    CellParticle = (int *)malloc( (PowerParticleCount) * sizeof(int) );
-	#pragma acc enter data create(CellIndex[0:PowerParticleCount]) attach(CellIndex)
-	#pragma acc enter data create(CellParticle[0:PowerParticleCount]) attach(CellParticle)
-	
-	#pragma acc update device(CellCount[0:DIM],TotalCellCount)
-	#pragma acc update device(DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
+	#pragma acc update device(MaxRadius)	
+	#pragma acc update device(CellWidth[0:DIM],CellCount[0:DIM],TotalCellCount)
+	#pragma acc update device(DomainMax[0:DIM],DomainMin[0:DIM],DomainWidth[0:DIM])
 	#pragma acc update device(ParticleCountPower,PowerParticleCount)
-	#pragma acc update device(MaxRadius)
+	
+	///
+	
+//	MaxRadius = ((RadiusA>MaxRadius) ? RadiusA : MaxRadius);
+//	MaxRadius = ((2.0*RadiusP>MaxRadius) ? 2.0*RadiusP : MaxRadius);
+//	MaxRadius = ((RadiusV>MaxRadius) ? RadiusV : MaxRadius);
+//	fprintf(stderr, "MaxRadius = %lf\n", MaxRadius);
+//	
+//	//CellWidth=ParticleSpacing;
+//	CellWidth = ceil(MaxRadius/ParticleSpacing)*ParticleSpacing;
+//	
+//	double cellCount[DIM];
+//	
+//	cellCount[0] = (DomainMax[0] - DomainMin[0])/CellWidth;
+//	cellCount[1] = (DomainMax[1] - DomainMin[1])/CellWidth;
+//	#ifdef TWO_DIMENSIONAL
+//	cellCount[2] = 1;
+//	#else
+//	cellCount[2] = (DomainMax[2] - DomainMin[2])/CellWidth;
+//	#endif
+//	
+//	CellCount[0] = (int)ceil(cellCount[0]);
+//	CellCount[1] = (int)ceil(cellCount[1]);
+//	CellCount[2] = (int)ceil(cellCount[2]);
+//	TotalCellCount = CellCount[0]*CellCount[1]*CellCount[2];
+//	fprintf(stderr, "TotalCellCount = %d\n", TotalCellCount);
+//
+//    if(cellCount[0]!=(double)CellCount[0] || cellCount[1]!=(double)CellCount[1] ||cellCount[2]!=(double)CellCount[2]){
+//        fprintf(stderr,"DomainWidth/CellWidth is not integer\n");
+//        DomainMax[0] = DomainMin[0] + CellWidth*(double)CellCount[0];
+//        DomainMax[1] = DomainMin[1] + CellWidth*(double)CellCount[1];
+//        DomainMax[2] = DomainMin[2] + CellWidth*(double)CellCount[2];
+//        fprintf(stderr,"Changing the Domain Max to (%e,%e,%e)\n", DomainMax[0], DomainMax[1], DomainMax[2]);
+//    }
+//    DomainWidth[0] = DomainMax[0] - DomainMin[0];
+//    DomainWidth[1] = DomainMax[1] - DomainMin[1];
+//    DomainWidth[2] = DomainMax[2] - DomainMin[2];
+//
+//	CellFluidParticleBegin = (int *)malloc( TotalCellCount * sizeof(int) );
+//	CellFluidParticleEnd   = (int *)malloc( TotalCellCount * sizeof(int) );
+//	CellWallParticleBegin  = (int *)malloc( TotalCellCount * sizeof(int) );
+//	CellWallParticleEnd    = (int *)malloc( TotalCellCount * sizeof(int) );
+//	#pragma acc enter data create(CellFluidParticleBegin[0:TotalCellCount]) attach(CellFluidParticleBegin)
+//	#pragma acc enter data create(CellFluidParticleEnd[0:TotalCellCount]) attach(CellFluidParticleEnd)
+//	#pragma acc enter data create(CellWallParticleBegin[0:TotalCellCount]) attach(CellWallParticleBegin)
+//	#pragma acc enter data create(CellWallParticleEnd[0:TotalCellCount]) attach(CellWallParticleEnd)
+//	
+//	#pragma acc update device(CellCount[0:DIM],TotalCellCount)
+//	#pragma acc update device(DomainMin[0:DIM],DomainMax[0:DIM],DomainWidth[0:DIM])
+//	#pragma acc update device(MaxRadius)
 }
 
 static void calculateCellParticle()
@@ -1180,9 +1258,9 @@ static void calculateCellParticle()
 	#pragma omp parallel for
 	for(int iP=0; iP<PowerParticleCount; ++iP){
 		if(iP<ParticleCount){
-			const int iCX=((int)floor((Position[iP][0]-DomainMin[0])/CellWidth))%CellCount[0];
-			const int iCY=((int)floor((Position[iP][1]-DomainMin[1])/CellWidth))%CellCount[1];
-			const int iCZ=((int)floor((Position[iP][2]-DomainMin[2])/CellWidth))%CellCount[2];
+			const int iCX=((int)floor((Position[iP][0]-DomainMin[0])/CellWidth[0]))%CellCount[0];
+			const int iCY=((int)floor((Position[iP][1]-DomainMin[1])/CellWidth[1]))%CellCount[1];
+			const int iCZ=((int)floor((Position[iP][2]-DomainMin[2])/CellWidth[2]))%CellCount[2];
 			CellIndex[iP]=CellId(iCX,iCY,iCZ);
 			if(WALL_BEGIN<=Property[iP] && Property[iP]<WALL_END){
 				CellIndex[iP] += TotalCellCount;
@@ -1397,27 +1475,15 @@ static void calculateNeighbor( void )
 	for(int iP=0;iP<ParticleCount;++iP){
 		NeighborFluidCount[iP]=0;
 		NeighborCount[iP]=0;
-		for(int iN=0;iN<MAX_NEIGHBOR_COUNT;++iN){
-			Neighbor[iP][iN]=-1;
-		}
-	}
-	
-	#pragma acc kernels
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iP=0;iP<ParticleCount;++iP){
 		NeighborCountP[iP]=0;
-		for(int iN=0;iN<MAX_NEIGHBOR_COUNT;++iN){
-			NeighborP[iP][iN]=-1;
-		}
 	}
 	
-	const int rangeX = (int)(ceil(MaxRadius/CellWidth));
-	const int rangeY = (int)(ceil(MaxRadius/CellWidth));
+	const int rangeX = (int)(ceil(MaxRadius/CellWidth[0]));
+	const int rangeY = (int)(ceil(MaxRadius/CellWidth[1]));
 	#ifdef TWO_DIMENSIONAL
 	const int rangeZ = 0;
 	#else // not TWO_DIMENSIONAL (three dimensional) 
-	const int rangeZ = (int)(ceil(MaxRadius/CellWidth));
+	const int rangeZ = (int)(ceil(MaxRadius/CellWidth[2]));
 	#endif
 	
 	#define MAX_1D_NEIGHBOR_CELL_COUNT 3
@@ -1432,10 +1498,6 @@ static void calculateNeighbor( void )
 		const int iCX=(CellIndex[iP]/(CellCount[1]*CellCount[2]))%TotalCellCount;
 		const int iCY=(CellIndex[iP]/CellCount[2])%CellCount[1];
 		const int iCZ=CellIndex[iP]%CellCount[2];
-		// same as
-		// const int iCX=((int)floor((q[iP][0]-DomainMin[0])/CellWidth))%CellCount[0];
-		// const int iCY=((int)floor((q[iP][1]-DomainMin[1])/CellWidth))%CellCount[1];
-		// const int iCZ=((int)floor((q[iP][2]-DomainMin[2])/CellWidth))%CellCount[2];
 		
 		int jCXs[MAX_1D_NEIGHBOR_CELL_COUNT];
 		int jCYs[MAX_1D_NEIGHBOR_CELL_COUNT];
@@ -1460,6 +1522,169 @@ static void calculateNeighbor( void )
 		const int bZ = (2*rangeZ)-(iCZ+rangeZ)%CellCount[2];
 		const int jZmin= ( ( bZ>0 )? bZ:0 );
 		
+		#pragma acc loop seq
+		for(int jX=jXmin;jX<jXmin+(2*rangeX+1);++jX){
+			#pragma acc loop seq
+			for(int jY=jYmin;jY<jYmin+(2*rangeY+1);++jY){
+				#pragma acc loop seq
+				for(int jZ=jZmin;jZ<jZmin+(2*rangeZ+1);++jZ){
+					const int jCX = jCXs[ jX % (2*rangeX+1)];
+					const int jCY = jCYs[ jY % (2*rangeY+1)];
+					const int jCZ = jCZs[ jZ % (2*rangeZ+1)];
+					const int jC=CellId(jCX,jCY,jCZ);
+					#pragma acc loop seq
+					for(int jP=CellFluidParticleBegin[jC];jP<CellFluidParticleEnd[jC];++jP){
+						double qij[DIM];
+						#pragma acc loop seq
+						for(int iD=0;iD<DIM;++iD){
+							qij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+						}
+						const double qij2= qij[0]*qij[0]+qij[1]*qij[1]+qij[2]*qij[2];
+						#ifndef _OPENACC
+						if( iP!=jP && qij2==0.0 ){
+							log_printf("line:%d, Warning:overlaped iP=%d, jP=%d\n", __LINE__, iP, jP);
+							log_printf("x[iP] = %e, %e, %e\n", Position[iP][0],Position[iP][1],Position[iP][2]);
+							log_printf("v[iP] = %e, %e, %e\n", Velocity[iP][0],Velocity[iP][1],Velocity[iP][2]);
+						}
+						#endif
+						if(qij2 <= MaxRadius*MaxRadius){
+							NeighborCount[iP]++;
+							NeighborFluidCount[iP]++;
+							if(qij2 <= RadiusP*RadiusP){
+								NeighborCountP[iP]++;
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		if( WallParticleBegin<=iP && iP<WallParticleEnd && NeighborCount[iP]==0)continue;
+		
+		#pragma acc loop seq
+		for(int jX=jXmin;jX<jXmin+(2*rangeX+1);++jX){
+			#pragma acc loop seq
+			for(int jY=jYmin;jY<jYmin+(2*rangeY+1);++jY){
+				#pragma acc loop seq
+				for(int jZ=jZmin;jZ<jZmin+(2*rangeZ+1);++jZ){
+					const int jCX = jCXs[ jX % (2*rangeX+1)];
+					const int jCY = jCYs[ jY % (2*rangeY+1)];
+					const int jCZ = jCZs[ jZ % (2*rangeZ+1)];
+					const int jC=CellId(jCX,jCY,jCZ);
+					#pragma acc loop seq
+					for(int jP=CellWallParticleBegin[jC];jP<CellWallParticleEnd[jC];++jP){
+						double qij[DIM];
+						#pragma acc loop seq
+						for(int iD=0;iD<DIM;++iD){
+							qij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+						}
+						const double qij2= qij[0]*qij[0]+qij[1]*qij[1]+qij[2]*qij[2];
+						#ifndef _OPENACC
+						if( iP!=jP && qij2==0.0 ){
+							log_printf("line:%d, Warning:overlaped iP=%d, jP=%d\n", __LINE__, iP, jP);
+							log_printf("x[iP] = %e, %e, %e\n", Position[iP][0],Position[iP][1],Position[iP][2]);
+							log_printf("v[iP] = %e, %e, %e\n", Velocity[iP][0],Velocity[iP][1],Velocity[iP][2]);
+						}
+						#endif
+						if(qij2 <= MaxRadius*MaxRadius){
+							NeighborCount[iP]++;
+							if(qij2 <= RadiusP*RadiusP){
+								NeighborCountP[iP]++;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<PowerParticleCount;++iP){
+		NeighborPtr[iP]=0;
+		NeighborPtrP[iP]=0;
+	}
+	
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		NeighborPtr[iP+1]=NeighborCount[iP];
+		NeighborPtrP[iP+1]=NeighborCountP[iP];
+	}
+	
+	// Convert NeighborPtr & NeighborPtrP into cumulative sum
+	for(int iMain=0;iMain<ParticleCountPower;++iMain){
+		const int dist = (1<<iMain);	
+		#pragma acc kernels present(NeighborPtr[0:PowerParticleCount],NeighborPtrP[0:PowerParticleCount])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iP=0;iP<PowerParticleCount;iP+=(dist<<1)){
+			NeighborPtr[iP] += NeighborPtr[iP+dist];
+			NeighborPtrP[iP]+= NeighborPtrP[iP+dist];
+		}
+	}
+    for(int iMain=0;iMain<ParticleCountPower;++iMain){
+		const int dist = (PowerParticleCount>>(iMain+1));	
+		#pragma acc kernels present(NeighborPtr[0:PowerParticleCount],NeighborPtrP[0:PowerParticleCount])
+		#pragma acc loop independent
+		#pragma omp parallel for
+		for(int iP=0;iP<PowerParticleCount;iP+=(dist<<1)){
+			NeighborPtr[iP] -= NeighborPtr[iP+dist];
+			NeighborPtr[iP+dist] += NeighborPtr[iP];
+			NeighborPtrP[iP] -= NeighborPtrP[iP+dist];
+			NeighborPtrP[iP+dist] += NeighborPtrP[iP];
+		}
+	}
+	
+	#pragma acc kernels present(NeighborPtr[0:PowerParticleCount],NeighborPtrP[0:PowerParticleCount])
+	{
+		NeighborIndCount = NeighborPtr[ParticleCount];
+		NeighborIndCountP= NeighborPtrP[ParticleCount];
+	}
+	#pragma acc update host(NeighborIndCount,NeighborIndCountP)
+	// log_printf("line:%d, NeighborIndCount = %u\n",__LINE__,NeighborIndCount);
+    // log_printf("line:%d, NeighborIndCountP= %u\n",__LINE__,NeighborIndCountP);
+    
+	NeighborInd = (int *)malloc( NeighborIndCount * sizeof(int) );
+	NeighborIndP= (int *)malloc( NeighborIndCountP * sizeof(int) );
+	#pragma acc enter data create(NeighborInd[0:NeighborIndCount])
+	#pragma acc enter data create(NeighborIndP[0:NeighborIndCountP])
+	
+	#pragma acc kernels present(CellParticle[0:PowerParticleCount],CellFluidParticleBegin[0:TotalCellCount],CellFluidParticleEnd[0:TotalCellCount],CellWallParticleBegin[0:TotalCellCount],CellWallParticleEnd[0:TotalCellCount],NeighborPtr[0:PowerParticleCount],NeighborPtrP[0:PowerParticleCount],NeighborInd[0:NeighborIndCount],NeighborIndP[0:NeighborIndCountP],Position[0:ParticleCount][0:DIM])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		const int iCX=(CellIndex[iP]/(CellCount[1]*CellCount[2]))%TotalCellCount;
+		const int iCY=(CellIndex[iP]/CellCount[2])%CellCount[1];
+		const int iCZ=CellIndex[iP]%CellCount[2];
+		
+		int jCXs[MAX_1D_NEIGHBOR_CELL_COUNT];
+		int jCYs[MAX_1D_NEIGHBOR_CELL_COUNT];
+		int jCZs[MAX_1D_NEIGHBOR_CELL_COUNT];
+		
+		#pragma acc loop seq
+		for(int jX=0;jX<2*rangeX+1;++jX){
+			jCXs[jX]=((iCX-rangeX+jX)%CellCount[0]+CellCount[0])%CellCount[0];
+		}
+		#pragma acc loop seq
+		for(int jY=0;jY<2*rangeY+1;++jY){
+			jCYs[jY]=((iCY-rangeY+jY)%CellCount[1]+CellCount[1])%CellCount[1];
+		}
+		#pragma acc loop seq
+		for(int jZ=0;jZ<2*rangeZ+1;++jZ){
+			jCZs[jZ]=((iCZ-rangeZ+jZ)%CellCount[2]+CellCount[2])%CellCount[2];
+		}
+		const int bX = (2*rangeX)-(iCX+rangeX)%CellCount[0];
+		const int jXmin= ( ( bX>0 )? bX:0 );
+		const int bY = (2*rangeY)-(iCY+rangeY)%CellCount[1];
+		const int jYmin= ( ( bY>0 )? bY:0 );
+		const int bZ = (2*rangeZ)-(iCZ+rangeZ)%CellCount[2];
+		const int jZmin= ( ( bZ>0 )? bZ:0 );
+		
+		int iN = 0;
+		int iNP= 0;
 		
 		#pragma acc loop seq
 		for(int jX=jXmin;jX<jXmin+(2*rangeX+1);++jX){
@@ -1480,24 +1705,21 @@ static void calculateNeighbor( void )
 						}
 						const double qij2= qij[0]*qij[0]+qij[1]*qij[1]+qij[2]*qij[2];
 						if(qij2 <= MaxRadius*MaxRadius){
-							if(NeighborCount[iP]>=MAX_NEIGHBOR_COUNT){
-								NeighborCount[iP]++;
-								NeighborFluidCount[iP]++;
-								continue;
-							}
-							Neighbor[iP][NeighborCount[iP]]=jP;
-							NeighborCount[iP]++;
-							NeighborFluidCount[iP]++;
+							NeighborInd[ NeighborPtr[iP]+iN ] = jP;
+							iN++;
 							
 							if(qij2 <= RadiusP*RadiusP){
-								NeighborP[iP][NeighborCountP[iP]]=jP;
-								NeighborCountP[iP]++;
+								NeighborIndP[ NeighborPtrP[iP]+iNP ] = jP;
+								iNP++;
 							}
 						}
 					}
 				}
 			}
 		}
+		
+		if( WallParticleBegin<=iP && iP<WallParticleEnd && NeighborCount[iP]==0)continue;
+		
 		#pragma acc loop seq
 		for(int jX=jXmin;jX<jXmin+(2*rangeX+1);++jX){
 			#pragma acc loop seq
@@ -1517,16 +1739,12 @@ static void calculateNeighbor( void )
 						}
 						const double qij2= qij[0]*qij[0]+qij[1]*qij[1]+qij[2]*qij[2];
 						if(qij2 <= MaxRadius*MaxRadius){
-							if(NeighborCount[iP]>=MAX_NEIGHBOR_COUNT){
-								NeighborCount[iP]++;
-								continue;
-							}
-							Neighbor[iP][NeighborCount[iP]]=jP;
-							NeighborCount[iP]++;
+							NeighborInd[ NeighborPtr[iP]+iN ] = jP;
+							iN++;
 							
 							if(qij2 <= RadiusP*RadiusP){
-								NeighborP[iP][NeighborCountP[iP]]=jP;
-								NeighborCountP[iP]++;
+								NeighborIndP[ NeighborPtrP[iP]+iNP ] = jP;
+								iNP++;
 							}
 						}
 					}
@@ -1535,6 +1753,15 @@ static void calculateNeighbor( void )
 		}
 	}
 }
+
+static void freeNeighbor()
+{
+	free(NeighborInd);
+	free(NeighborIndP);
+	#pragma acc exit data delete(NeighborInd)
+	#pragma acc exit data delete(NeighborIndP)
+}
+
  
 static void calculateConvection()
 {
@@ -1587,102 +1814,150 @@ static void calculatePhysicalCoefficients()
 		//if(VolStrainP[iP]<0.0){Lambda[iP]=0.0;}
 	}
 	
+	#ifdef _BINGHAM_
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){ // yield stress
+		const double p = VirialPressureInsideRadius[iP];
+		const double c = MohrCoulombInterceptC[ Property[iP] ];
+		const double phi = MohrCoulombFrictionAnglePhi[ Property[iP] ];
+		YieldStress[iP] = c + ((p>0.0) ? p:0.0) * tan(M_PI/180.0*phi);
+	}
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){ // shear rate
+		double strainrate[DIM][DIM] = {{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
+		#pragma acc loop seq
+		for(int jN=0;jN<NeighborCount[iP];++jN){  //NeighborCountPã«ãŠãã‹ãˆ
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ]; //IndP, PtrPã«ãŠãã‹ãˆ
+			if(iP==jP)continue;
+            double xij[DIM];
+			#pragma acc loop seq
+            for(int iD=0;iD<DIM;++iD){
+                xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+            }
+			const double radius = RadiusP;
+			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
+			if(radius*radius - rij2 >= 0){
+				const double rij = sqrt(rij2);
+				const double dw = dwpdr(rij,radius);
+				double eij[DIM] = {xij[0]/rij,xij[1]/rij,xij[2]/rij};
+				double uij[DIM];
+				#pragma acc loop seq
+				for(int iD=0;iD<DIM;++iD){
+					uij[iD]=Velocity[jP][iD]-Velocity[iP][iD];
+				}
+				#pragma acc loop seq
+				for(int iD=0;iD<DIM;++iD){
+					#pragma acc loop seq
+					for(int jD=0;jD<DIM;++jD){
+						strainrate[iD][jD] -= 0.5*(uij[iD]*eij[jD]+uij[jD]*eij[iD])*dw;
+					}
+				}
+			}
+		}
+		double ss = 0.0;
+		#pragma acc loop seq
+		for(int iD=0;iD<DIM;++iD){
+			#pragma acc loop seq
+			for(int jD=0;jD<DIM;++jD){
+				ss += strainrate[iD][jD]*strainrate[iD][jD];
+			}
+		}
+		ShearRate[iP]=sqrt(2.0*ss);
+	}
+	
+	#pragma acc kernels
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){ // viscosity
+		const double k = PseudoplasticFlowConsistencyIndexK[ Property[iP] ];
+		const double n = PseudoplasticFlowBehaviorIndexN[ Property[iP] ];
+		const double m = PapanastasiouRegularizationIndexM[ Property[iP] ];
+		if( ShearRate[iP]!=0.0 ){
+			Mu[iP] = k * pow(ShearRate[iP],(n-1)) + (YieldStress[iP]/ShearRate[iP])*(1.0-exp(-m*ShearRate[iP]));
+		}
+		else{
+			Mu[iP] = YieldStress[iP]*m;
+		}
+	}
+	
+	
+	#else //_BINGHAM_
 	#pragma acc kernels
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		Mu[iP]=ShearViscosity[Property[iP]];
 	}
-	
-	// 20230514 added by Masahiro Kondo for Bingham calculation
-	#ifdef BINGHAM
-	#pragma acc kernels
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iP=0;iP<ParticleCount;++iP){
-		MuS[iP]=SolidViscosity[Property[iP]];
-	}
-	#pragma acc kernels
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iP=0;iP<ParticleCount;++iP){
-		SigY[iP]=BaseYieldStress[Property[iP]]+tan(M_PI/180.0*FrictionAngle[Property[iP]])*PressureP[iP];
-	}
-	#pragma acc kernels
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iP=0;iP<ParticleCount;++iP){
-		MuP[iP]=PlasticViscosity[Property[iP]];
-	}
-	#endif
+	#endif //_BINGHAM_
 }
 
 static void calculateDensityA()
 {
-    
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM])
-	{	
-		#pragma acc loop independent
-		#pragma omp parallel for
-		for(int iP=0;iP<ParticleCount;++iP){
-			double sum = 0.0;
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		double sum = 0.0;
+		#pragma acc loop seq
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
+			if(iP==jP)continue;
+			double ratio = InteractionRatio[Property[iP]][Property[jP]];
+			double xij[DIM];
 			#pragma acc loop seq
-			for(int iN=0;iN<NeighborCount[iP];++iN){
-				const int jP=Neighbor[iP][iN];
-				if(iP==jP)continue;
-				double ratio = InteractionRatio[Property[iP]][Property[jP]];
-				double xij[DIM];
-				#pragma acc loop seq
-				for(int iD=0;iD<DIM;++iD){
-					xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-				}
-				const double radius = RadiusA;
-				const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-				if(radius*radius - rij2 >= 0){
-					const double rij = sqrt(rij2);
-					const double weight = ratio * wa(rij,radius);
-					sum += weight;
-				}
+			for(int iD=0;iD<DIM;++iD){
+				xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
 			}
-			DensityA[iP]=sum;
+			const double radius = RadiusA;
+			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(radius*radius - rij2 >= 0){
+				const double rij = sqrt(rij2);
+				const double weight = ratio * wa(rij,radius);
+				sum += weight;
+			}
 		}
+		DensityA[iP]=sum;
 	}
 }
 
+
 static void calculateGravityCenter()
 {
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM])
-	
-		#pragma acc loop independent
-		#pragma omp parallel for
-		for(int iP=0;iP<ParticleCount;++iP){
-			double sum[DIM]={0.0,0.0,0.0};
-			#pragma acc loop seq
-			for(int iN=0;iN<NeighborCount[iP];++iN){
-				const int jP=Neighbor[iP][iN];
-				if(iP==jP)continue;
-				double ratio = InteractionRatio[Property[iP]][Property[jP]];
-				double xij[DIM];
-				#pragma acc loop seq
-				for(int iD=0;iD<DIM;++iD){
-					xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-				}
-				const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-				if(RadiusG*RadiusG - rij2 >= 0){
-					const double rij = sqrt(rij2);
-					const double weight = ratio * wg(rij,RadiusG);
-					#pragma acc loop seq
-					for(int iD=0;iD<DIM;++iD){
-						sum[iD] += xij[iD]*weight/R2g*RadiusG;
-					}
-				}
-			}
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
+	#pragma acc loop independent
+	#pragma omp parallel for
+	for(int iP=0;iP<ParticleCount;++iP){
+		double sum[DIM]={0.0,0.0,0.0};
+		#pragma acc loop seq
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
+			if(iP==jP)continue;
+			double ratio = InteractionRatio[Property[iP]][Property[jP]];
+			double xij[DIM];
 			#pragma acc loop seq
 			for(int iD=0;iD<DIM;++iD){
-				GravityCenter[iP][iD] = sum[iD];
+				xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+			}
+			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(RadiusG*RadiusG - rij2 >= 0){
+				const double rij = sqrt(rij2);
+				const double weight = ratio * wg(rij,RadiusG);
+				#pragma acc loop seq
+				for(int iD=0;iD<DIM;++iD){
+					sum[iD] += xij[iD]*weight/R2g*RadiusG;
+				}
 			}
 		}
-	
+		#pragma acc loop seq
+		for(int iD=0;iD<DIM;++iD){
+			GravityCenter[iP][iD] = sum[iD];
+		}
+	}
 }
 
 static void calculatePressureA()
@@ -1698,14 +1973,14 @@ static void calculatePressureA()
 		}
 	}
 	
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],PressureA[0:ParticleCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],PressureA[0:ParticleCount],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
     for(int iP=0;iP<ParticleCount;++iP){
     	double force[DIM]={0.0,0.0,0.0};
     	#pragma acc loop seq
-        for(int iN=0;iN<NeighborCount[iP];++iN){
-            const int jP=Neighbor[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
         	if(iP==jP)continue;
 			double ratio_ij = InteractionRatio[Property[iP]][Property[jP]];
         	double ratio_ji = InteractionRatio[Property[jP]][Property[iP]];
@@ -1716,6 +1991,7 @@ static void calculatePressureA()
             }
             const double radius = RadiusA;
             const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
             if(radius*radius - rij2 > 0){
                 const double rij = sqrt(rij2);
                 const double dwij = ratio_ij * dwadr(rij,radius);
@@ -1736,15 +2012,15 @@ static void calculatePressureA()
 
 static void calculateDiffuseInterface()
 {
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],GravityCenter[0:ParticleCount][0:DIM])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],GravityCenter[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		const double ai = CofA[Property[iP]]*(CofK)*(CofK);
 		double force[DIM]={0.0,0.0,0.0};
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCount[iP];++iN){
-			const int jP=Neighbor[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
 			const double aj = CofA[Property[iP]]*(CofK)*(CofK);
 			double ratio_ij = InteractionRatio[Property[iP]][Property[jP]];
@@ -1754,8 +2030,9 @@ static void calculateDiffuseInterface()
 			for(int iD=0;iD<DIM;++iD){
 				xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
 			}
-			
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
+			
 			if(RadiusG*RadiusG - rij2 > 0){
 				const double rij = sqrt(rij2);
 				const double wij = ratio_ij * wg(rij,RadiusG);
@@ -1788,14 +2065,14 @@ static void calculateDiffuseInterface()
 static void calculateDensityP()
 {
 	
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double sum = 0.0;
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCountP[iP];++iN){
-			const int jP=NeighborP[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
 			double xij[DIM];
 			#pragma acc loop seq
@@ -1817,14 +2094,14 @@ static void calculateDensityP()
 static void calculateDivergenceP()
 {
 
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double sum = 0.0;
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCountP[iP];++iN){
-            const int jP=NeighborP[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
             double xij[DIM];
 			#pragma acc loop seq
@@ -1833,6 +2110,7 @@ static void calculateDivergenceP()
             }
 			const double radius = RadiusP;
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
 			if(radius*radius - rij2 >= 0){
 				const double rij = sqrt(rij2);
 				const double dw = dwpdr(rij,radius);
@@ -1844,7 +2122,7 @@ static void calculateDivergenceP()
 				}
 				#pragma acc loop seq
 				for(int iD=0;iD<DIM;++iD){
-					DivergenceP[iP] -= uij[iD]*eij[iD]*dw;
+					sum -= uij[iD]*eij[iD]*dw;
 				}
 			}
 		}
@@ -1864,14 +2142,14 @@ static void calculatePressureP()
 		}
 	}
 	
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],PressureP[0:ParticleCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],PressureP[0:ParticleCount],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double force[DIM]={0.0,0.0,0.0};
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCountP[iP];++iN){
-            const int jP=NeighborP[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
             double xij[DIM];
 			#pragma acc loop seq
@@ -1880,6 +2158,7 @@ static void calculatePressureP()
             }
 			const double radius = RadiusP;
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
 			if(radius*radius - rij2 > 0){
 				const double rij = sqrt(rij2);
 				const double dw = dwpdr(rij,radius);
@@ -1899,49 +2178,50 @@ static void calculatePressureP()
 
 static void calculateViscosityV(){
 
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Mu[0:ParticleCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],Mu[0:ParticleCount],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
-    for(int iP=0;iP<ParticleCount;++iP){
-    	double force[DIM]={0.0,0.0,0.0};
-    	#pragma acc loop seq
-        for(int iN=0;iN<NeighborCount[iP];++iN){
-            const int jP=Neighbor[iP][iN];
-        	if(iP==jP)continue;
-            double xij[DIM];
-        	#pragma acc loop seq
-            for(int iD=0;iD<DIM;++iD){
-                xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-            }
-            const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-            
-        	// viscosity term
-        	if(RadiusV*RadiusV - rij2 > 0){
-                const double rij = sqrt(rij2);
-                const double dwij = -dwvdr(rij,RadiusV);
-            	const double eij[DIM] = {xij[0]/rij,xij[1]/rij,xij[2]/rij};
-        		double uij[DIM];
+	for(int iP=0;iP<ParticleCount;++iP){
+		double force[DIM]={0.0,0.0,0.0};
+		#pragma acc loop seq
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
+			if(iP==jP)continue;
+			double xij[DIM];
+			#pragma acc loop seq
+			for(int iD=0;iD<DIM;++iD){
+				xij[iD] = Mod(Position[jP][iD] - Position[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+			}
+			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
+			
+			// viscosity term
+			if(RadiusV*RadiusV - rij2 > 0){
+				const double rij = sqrt(rij2);
+				const double dwij = -dwvdr(rij,RadiusV);
+				const double eij[DIM] = {xij[0]/rij,xij[1]/rij,xij[2]/rij};
+				double uij[DIM];
 				#pragma acc loop seq
 				for(int iD=0;iD<DIM;++iD){
 					uij[iD]=Velocity[jP][iD]-Velocity[iP][iD];
 				}
 				const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
-            	double fij[DIM] = {0.0,0.0,0.0};
-        		#pragma acc loop seq
-            	for(int iD=0;iD<DIM;++iD){
-            		#ifdef TWO_DIMENSIONAL
-            		force[iD] += 8.0*muij*(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])*eij[iD]*dwij/rij*ParticleVolume;
-            		#else
-            		force[iD] += 10.0*muij*(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])*eij[iD]*dwij/rij*ParticleVolume;
-            		#endif
-            	}
-            }
-        }
-    	#pragma acc loop seq
-    	for(int iD=0;iD<DIM;++iD){
-    		Force[iP][iD] += force[iD];
-    	}
-    }
+				double fij[DIM] = {0.0,0.0,0.0};
+				#pragma acc loop seq
+				for(int iD=0;iD<DIM;++iD){
+					#ifdef TWO_DIMENSIONAL
+					force[iD] += 8.0*muij*(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])*eij[iD]*dwij/rij*ParticleVolume;
+					#else
+					force[iD] += 10.0*muij*(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])*eij[iD]*dwij/rij*ParticleVolume;
+					#endif
+				}
+			}
+		}
+		#pragma acc loop seq
+		for(int iD=0;iD<DIM;++iD){
+			Force[iP][iD] += force[iD];
+		}
+	}
 }
 
 static void calculateGravity(){
@@ -2009,10 +2289,10 @@ static void calculateWall()
 	}
 }
 
-static int NonzeroCountA;
-static double *CsrCofA;  // [ FluidCount * DIM x NeighFluidCount * DIM]
-static int    *CsrIndA;  // [ FluidCount * DIM x NeighFluidCount * DIM]
-static int    *CsrPtrA;  // [ FluidCount * DIM + 1 ] NeighborFluidCount‚ÌÏŽZ—ñ‚Æ‚µ‚ÄŒvŽZ‰Â
+static long int NonzeroCountA;
+static double       *CsrCofA;  // [ FluidCount * DIM x NeighFluidCount * DIM]
+static int          *CsrIndA;  // [ FluidCount * DIM x NeighFluidCount * DIM]
+static long int *CsrPtrA;  // [ FluidCount * DIM + 1 ] NeighborFluidCount‚ÌÏŽZ—ñ‚Æ‚µ‚ÄŒvŽZ‰Â
 static double *VectorB;  // [ FluidCount * DIM ]
 #pragma acc declare create(NonzeroCountA,CsrCofA,CsrIndA,CsrPtrA,VectorB)
 
@@ -2032,7 +2312,7 @@ static void calculateMatrixA( void )
 	}
 	const int powerN = (1<<power);
     
-	CsrPtrA = (int *)malloc( powerN * sizeof(int));
+	CsrPtrA = (long int *)malloc( powerN * sizeof(long int));
 	#pragma acc enter data create(CsrPtrA[0:powerN])
     
     #pragma acc kernels
@@ -2055,7 +2335,7 @@ static void calculateMatrixA( void )
 	
 	// Convert CsrPtrA into cumulative sum
     for(int iMain=0;iMain<power;++iMain){
-		const int dist = (1<<iMain);	
+		const int dist = (1<<iMain);
 		#pragma acc kernels present(CsrPtrA[0:powerN])
 		#pragma acc loop independent
 		#pragma omp parallel for
@@ -2079,41 +2359,49 @@ static void calculateMatrixA( void )
 		NonzeroCountA=CsrPtrA[N];
 	}
 	#pragma acc update host(NonzeroCountA)
-    
+	// log_printf("line:%d, NonzeroCountA=%u\n",__LINE__,NonzeroCountA);
+	
 	// calculate coeeficient matrix A and source vector B
 	CsrCofA = (double *)malloc( NonzeroCountA * sizeof(double) );
-	CsrIndA = (int *)malloc( NonzeroCountA * sizeof(int) );
+	CsrIndA = (   int *)malloc( NonzeroCountA * sizeof(int) );
 	VectorB = (double *)malloc( N * sizeof(double) );
-	#pragma acc enter data create(CsrCofA[0:NonzeroCountA]) attach(CsrCofA)
-	#pragma acc enter data create(CsrIndA[0:NonzeroCountA]) attach(CsrIndA)
+	#pragma acc enter data create(CsrCofA[0:NonzeroCountA])
+	#pragma acc enter data create(CsrIndA[0:NonzeroCountA])
 	#pragma acc enter data create(VectorB[0:N]) attach(VectorB)
-    
-    #pragma acc kernels present(CsrPtrA[0:N],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA])
+	
+    #pragma acc kernels present(CsrPtrA[0:N],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<fluidcount;++iP){
 		#pragma acc loop independent
 		for(int jN=0;jN<NeighborFluidCount[iP];++jN){
-			const int jP = Neighbor[iP][jN];
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			#pragma acc loop seq
 			for(int rD=0;rD<DIM;++rD){
 				#pragma acc loop seq
 				for(int sD=0;sD<DIM;++sD){
 					const int iRow    = DIM*iP+rD;
 					const int jColumn = DIM*jP+sD;
-					const int iNonzero = CsrPtrA[iRow]+DIM*jN+sD;
+					const long int iNonzero = CsrPtrA[iRow]+DIM*jN+sD;
 					CsrIndA[ iNonzero ] = jColumn;
 				}
 			}
 		}
 	}
     
-    #pragma acc kernels
+    #pragma acc kernels present(CsrCofA[0:NonzeroCountA])
 	#pragma acc loop independent
 	#pragma omp parallel for
-	for(int iNonzero=0;iNonzero<NonzeroCountA;++iNonzero){
-		CsrCofA[ iNonzero ] = 0.0;
+	for(int iRow=0;iRow<N;++iRow){
+		#pragma acc loop seq
+		for(long int iNonzero=CsrPtrA[iRow];iNonzero<CsrPtrA[iRow+1];++iNonzero){
+			CsrCofA[iNonzero] = 0.0;
+		}
 	}
+//	// This will cause index error when NonzeroCountA > INT_MAX in OpenACC calculation
+//	for(long int iNonzero=0;iNonzero<NonzeroCountA;++iNonzero){
+//		CsrCofA[ iNonzero ] = 0.0;
+//	}
     
     #pragma acc kernels
 	#pragma acc loop independent
@@ -2122,7 +2410,7 @@ static void calculateMatrixA( void )
 		VectorB[iRow]=0.0;
 	}
     
-    #pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],m[0:ParticleCount],Mu[0:ParticleCount],MuS[0:ParticleCount],SigY[0:ParticleCount],MuP[0:ParticleCount],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA],CsrPtrA[0:N],VectorB[0:N])
+    #pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],m[0:ParticleCount],Mu[0:ParticleCount],CsrCofA[0:NonzeroCountA],CsrIndA[0:NonzeroCountA],CsrPtrA[0:N],VectorB[0:N],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=FluidParticleBegin;iP<FluidParticleEnd;++iP){
@@ -2133,7 +2421,7 @@ static void calculateMatrixA( void )
 		double sumvec[DIM]={0.0,0.0,0.0};
 		#pragma acc loop seq
 		for(int jN=0;jN<NeighborCount[iP];++jN){
-			const int jP = Neighbor[iP][jN];
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP){
 				iN=jN;
 				continue;
@@ -2144,45 +2432,12 @@ static void calculateMatrixA( void )
 				rij[rD] =  Mod(r[jP][rD] - r[iP][rD] + 0.5*DomainWidth[rD], DomainWidth[rD]) -0.5*DomainWidth[rD];
 			}
 			const double rij2 = rij[0]*rij[0]+rij[1]*rij[1]+rij[2]*rij[2];
+			if(rij2==0.0)continue;
 			if(RadiusV*RadiusV -rij2 > 0){
 				const double dij = sqrt(rij2);
 				const double wdrij = -dwvdr(dij,RadiusV);
 				const double eij[DIM] = {rij[0]/dij,rij[1]/dij,rij[2]/dij};
-				
-				// 20230514 added by Masahiro Kondo for Bingham calculation
-				#ifdef BINGHAM
-				// Bingham  // 20221111 modified by Masahiro Kondo
-				const double uij[DIM] = {v[jP][0]-v[iP][0],v[jP][1]-v[iP][1],v[jP][2]-v[iP][2]};
-				double strainrate = 2.0*fabs(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])/dij;
-				const double mui = shearviscosity( strainrate, MuS[iP], SigY[iP], MuP[iP] );
-				const double muj = shearviscosity( strainrate, MuS[jP], SigY[jP], MuP[jP] );
-				#ifndef _OPENACC
-				{	
-					if(!(mui>0.0)){
-						fprintf(stderr,"mui=%e\n",mui);
-						fprintf(stderr,"iP=%d, MuS[iP]=%e, SigY[iP]=%e, MuP[iP]=%e\n", iP, MuS[iP], SigY[iP], MuP[iP]);
-						fprintf(stderr, "strainrate=%e\n",strainrate);
-						fprintf(stderr, "dij=%e\n", dij);
-						fprintf(stderr, "r[iP]=(%e,%e,%e)\n", r[iP][0], r[iP][1], r[iP][2]);
-						fprintf(stderr, "v[iP]=(%e,%e,%e)\n", v[iP][0], v[iP][1], r[iP][2]);
-					}
-					if(!(muj>0.0)){
-						fprintf(stderr,"muj=%e\n",muj);
-						fprintf(stderr,"jP=%d, MuS[jP]=%e, SigY[jP]=%e, MuP[jP]=%e\n", jP, MuS[jP], SigY[jP], MuP[jP]);
-						fprintf(stderr, "strainrate=%e\n",strainrate);
-						fprintf(stderr, "dij=%e\n", dij);
-						fprintf(stderr, "r[jP]=(%e,%e,%e)\n", r[jP][0], r[jP][1], r[jP][2]);
-						fprintf(stderr, "v[jP]=(%e,%e,%e)\n", v[jP][0], v[jP][1], r[jP][2]);
-					}						
-					assert(mui>0.0); // 20221205 for check
-					assert(muj>0.0); // 20221205 for check
-				}
-				#endif //_OPENACC
-				const double muij = 2.0*(mui*muj)/(mui+muj);
-				#else
 				const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
-				#endif
-
 				#pragma acc loop seq
 				for(int rD=0;rD<DIM;++rD){
 					const int iRow = DIM*iP+rD;
@@ -2198,7 +2453,7 @@ static void calculateMatrixA( void )
 						
 						if(FLUID_BEGIN<=Property[jP] && Property[jP]<FLUID_END){
 							const int jColumn = DIM*jP+sD;
-							const int jNonzero= CsrPtrA[iRow]+DIM*jN+sD;
+							const long int jNonzero= CsrPtrA[iRow]+DIM*jN+sD;
 							// assert( CsrIndA [ jNonzero ] == jColumn);
 							CsrCofA [ jNonzero ] = -coefficient;
 						}
@@ -2216,7 +2471,7 @@ static void calculateMatrixA( void )
 			#pragma acc loop seq
 			for(int sD=0;sD<DIM;++sD){
 				const int iColumn = DIM*iP+sD;
-				const int iNonzero= CsrPtrA[iRow]+DIM*iN+sD;
+				const long int iNonzero= CsrPtrA[iRow]+DIM*iN+sD;
 				// assert( CsrIndA[ iNonzero ] == iColumn);
 				CsrCofA[ iNonzero ] = selfCof[rD][sD];
 			}
@@ -2232,7 +2487,7 @@ static void calculateMatrixA( void )
 		for(int iD=0;iD<DIM;++iD){
 			const int iRow = DIM*iP+iD;
 			const int iColumn = DIM*iP+iD;
-			const int iNonzero= CsrPtrA[iRow]+DIM*iN+iD;
+			const long int iNonzero= CsrPtrA[iRow]+DIM*iN+iD;
 			const double coefficient =  m[iP]/ParticleVolume / Dt;
 			// assert( CsrIndA[ iNonzero ] == iColumn );
 			CsrCofA[ iNonzero ] += coefficient;
@@ -2251,10 +2506,10 @@ static void freeMatrixA( void ){
 	#pragma acc exit data delete(CsrCofA,CsrIndA,CsrPtrA,VectorB)
 }
 
-static int    NonzeroCountC;
-static double *CsrCofC; // [ FluidCount * DIM x NeighCount ]
-static int    *CsrIndC; // [ FluidCount * DIM x NeighCount ]
-static int    *CsrPtrC; // [ FluidCount * DIM + 1 ] NeighCount‚ÌÏŽZ—ñ
+static long int  NonzeroCountC;
+static double       *CsrCofC; // [ FluidCount * DIM x NeighCount ]
+static int          *CsrIndC; // [ FluidCount * DIM x NeighCount ]
+static long int *CsrPtrC; // [ FluidCount * DIM + 1 ] NeighCount‚ÌÏŽZ—ñ
 static double *VectorP; // [ ParticleCount ]
 #pragma acc declare create(NonzeroCountC, CsrCofC,CsrIndC,CsrPtrC,VectorP)
 
@@ -2272,7 +2527,7 @@ static void calculateMatrixC( void )
 	}
 	const int powerN = (1<<power);
 	
-	CsrPtrC = (int *)malloc( powerN * sizeof(int));
+	CsrPtrC = (long int *)malloc( powerN * sizeof(long int));
 	#pragma acc enter data create(CsrPtrC[0:powerN]) attach(CsrPtrC)
 	
 	#pragma acc kernels
@@ -2319,6 +2574,7 @@ static void calculateMatrixC( void )
 		NonzeroCountC = CsrPtrC[N];
 	}
 	#pragma acc update host(NonzeroCountC)
+	// log_printf("line:%d, NonzeroCountC=%u\n",__LINE__,NonzeroCountC);
 	
 	// calculate coefficient matrix C and source vector P
 	CsrCofC = (double *)malloc( NonzeroCountC * sizeof(double) );
@@ -2328,29 +2584,35 @@ static void calculateMatrixC( void )
 	#pragma acc enter data create(CsrIndC[0:NonzeroCountC]) attach(CsrIndC)
 	#pragma acc enter data create(VectorP[0:ParticleCount]) attach(VectorP)
 	
-	#pragma acc kernels present(CsrPtrC[0:powerN],CsrIndC[0:NonzeroCountC],CsrCofC[0:NonzeroCountC],)
+	#pragma acc kernels present(CsrPtrC[0:powerN],CsrIndC[0:NonzeroCountC],CsrCofC[0:NonzeroCountC],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<fluidcount;++iP){
 		#pragma acc loop independent
 		for(int jN=0;jN<NeighborCountP[iP];++jN){
-			const int jP = NeighborP[iP][jN];
+			const int jP = NeighborIndP[ NeighborPtrP[iP]+jN ];
 			#pragma acc loop seq
 			for(int rD=0;rD<DIM;++rD){
 				const int iRow    = DIM*iP+rD;
 				const int iColumn = jP;
-				const int iNonzero = CsrPtrC[iRow]+jN;
+				const long int iNonzero = CsrPtrC[iRow]+jN;
 				CsrIndC[ iNonzero ] = iColumn;
 			}
 		}
 	}
 	
-	#pragma acc kernels
+	#pragma acc kernels present(CsrCofC[0:NonzeroCountC])
 	#pragma acc loop independent
 	#pragma omp parallel for
-	for(int iNonzero=0;iNonzero<NonzeroCountC;++iNonzero){
-		CsrCofC[ iNonzero ] = 0.0;
+	for(int iRow=0;iRow<N;++iRow){
+		for(long int iNonzero=CsrPtrC[iRow];iNonzero<CsrPtrC[iRow+1];++iNonzero){
+			CsrCofC[ iNonzero ] = 0.0;
+		}
 	}
+//	// This will cause index error when NonzeroCountC > INT_MAX in OpenACC calculation
+//	for(long int iNonzero=0;iNonzero<NonzeroCountC;++iNonzero){
+//		CsrCofC[ iNonzero ] = 0.0;
+//	}
 	
 	#pragma acc kernels
 	#pragma acc loop independent
@@ -2360,7 +2622,7 @@ static void calculateMatrixC( void )
 	}
 	
 	// set matrix C
-	#pragma acc kernels present(r[0:ParticleCount][0:DIM],CsrCofC[0:NonzeroCountC],CsrIndC[0:NonzeroCountC],CsrPtrC[0:N])
+	#pragma acc kernels present(r[0:ParticleCount][0:DIM],CsrCofC[0:NonzeroCountC],CsrIndC[0:NonzeroCountC],CsrPtrC[0:N],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<fluidcount;++iP){
@@ -2368,7 +2630,7 @@ static void calculateMatrixC( void )
 		double selfCof[DIM] = {0.0,0.0,0.0};
 		#pragma acc loop seq
 		for(int jN=0;jN<NeighborCountP[iP];++jN){
-			const int jP = NeighborP[iP][jN];
+			const int jP = NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP){
 				iN=jN;
 				continue;
@@ -2379,6 +2641,7 @@ static void calculateMatrixC( void )
 				rij[rD] =  Mod(r[jP][rD] - r[iP][rD] + 0.5*DomainWidth[rD], DomainWidth[rD]) -0.5*DomainWidth[rD];
 			}
 			const double rij2 = rij[0]*rij[0]+rij[1]*rij[1]+rij[2]*rij[2];
+			if(rij2==0.0)continue;
 			if(RadiusP*RadiusP -rij2 > 0){
 				const double dij = sqrt(rij2);
 				const double eij[DIM] = {rij[0]/dij,rij[1]/dij,rij[2]/dij};
@@ -2389,7 +2652,7 @@ static void calculateMatrixC( void )
 					const double coefficient = eij[rD]*wpdrij;
 					selfCof[rD]+=coefficient;
 					const int jColumn = jP;
-					const int iNonzero = CsrPtrC[iRow]+jN;
+					const long int iNonzero = CsrPtrC[iRow]+jN;
 					//assert( CsrIndC[ iNonzero ] == jColumn );
 					CsrCofC[ iNonzero ] = coefficient;
 				}
@@ -2399,14 +2662,14 @@ static void calculateMatrixC( void )
 		for(int rD=0;rD<DIM;++rD){
 			const int iRow = DIM*iP+rD;
 			const int iColumn = iP;
-			const int iNonzero = CsrPtrC[iRow]+iN;
+			const long int iNonzero = CsrPtrC[iRow]+iN;
 			//assert( CsrIndC[ iNonzero ] == iColumn );
 			CsrCofC[ iNonzero ] = selfCof[rD];
 		}
 	}
 
 	// set vector P
-	#pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Lambda[0:ParticleCount])
+	#pragma acc kernels present(Property[0:ParticleCount],r[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Lambda[0:ParticleCount],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){			
@@ -2418,7 +2681,7 @@ static void calculateMatrixC( void )
 		double sum = 0.0;
 		#pragma acc loop seq
 		for(int jN=0;jN<NeighborCountP[iP];++jN){
-			const int jP = NeighborP[iP][jN];
+			const int jP = NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP)continue;
 			double rij[DIM];
 			#pragma acc loop seq
@@ -2426,6 +2689,7 @@ static void calculateMatrixC( void )
 				rij[rD] =  Mod(r[jP][rD] - r[iP][rD] + 0.5*DomainWidth[rD], DomainWidth[rD]) -0.5*DomainWidth[rD];
 			}
 			const double rij2 = rij[0]*rij[0]+rij[1]*rij[1]+rij[2]*rij[2];
+			if(rij2==0.0)continue;
 			if(RadiusP*RadiusP -rij2 > 0){
 				const double dij = sqrt(rij2);
 				const double eij[DIM] = {rij[0]/dij,rij[1]/dij,rij[2]/dij};
@@ -2475,27 +2739,27 @@ static void multiplyMatrixC( void )
 	#pragma omp parallel for
 	for(int iRow=0;iRow<N;++iRow){
 		#pragma acc loop seq
-		for(int iNonzero=CsrPtrC[iRow];iNonzero<CsrPtrC[iRow+1];++iNonzero){
+		for(long int iNonzero=CsrPtrC[iRow];iNonzero<CsrPtrC[iRow+1];++iNonzero){
 			const int iColumn = CsrIndC[iNonzero];
 			VectorB[iRow] -= CsrCofC[iNonzero] * VectorP[iColumn];
 		}
 	}
 	
 	// A = A + Cƒ©C^T
-	#pragma acc kernels present(CsrPtrA[0:N],CsrIndA[0:NonzeroCountA],CsrCofA[0:NonzeroCountA],CsrPtrC[0:N],CsrIndC[0:NonzeroCountC],CsrCofC[0:NonzeroCountC],NeighborP[0:ParticleCount][0:MAX_NEIGHBOR_COUNT],NeighborCountP[0:ParticleCount],Lambda[0:ParticleCount])
+	#pragma acc kernels present(CsrPtrA[0:N],CsrIndA[0:NonzeroCountA],CsrCofA[0:NonzeroCountA],CsrPtrC[0:N],CsrIndC[0:NonzeroCountC],CsrCofC[0:NonzeroCountC],NeighborInd[0:NeighborIndCount],NeighborPtrP[0:PowerParticleCount],NeighborIndP[0:NeighborIndCountP],NeighborCountP[0:ParticleCount],Lambda[0:ParticleCount])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<fluidcount;++iP){
 		#pragma acc loop independent
 		for(int jN=0;jN<NeighborFluidCount[iP];++jN){
-			const int jP = Neighbor[iP][jN];
+			const int jP = NeighborInd[ NeighborPtr[iP]+jN ];
 			int iNeigh=0;
 			int jNeigh=0;
 			double sum[DIM][DIM]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
 			#pragma acc loop seq
 			while(iNeigh<NeighborCountP[iP] && jNeigh<NeighborCountP[jP]){
-				const int iNP = NeighborP[iP][iNeigh];
-				const int jNP = NeighborP[jP][jNeigh];
+				const int iNP = NeighborIndP[ NeighborPtrP[iP]+iNeigh ];
+				const int jNP = NeighborIndP[ NeighborPtrP[jP]+jNeigh ];
 				if(iNP==jNP){
 					#pragma acc loop seq
 					for(int rD=0;rD<DIM;++rD){
@@ -2503,11 +2767,11 @@ static void multiplyMatrixC( void )
 						for(int sD=0;sD<DIM;++sD){
 							const int iRowC    = DIM*iP+rD;
 							const int iColumnC = iNP;
-							const int iNonzeroC= CsrPtrC[iRowC]+iNeigh;
+							const long int iNonzeroC= CsrPtrC[iRowC]+iNeigh;
 							// assert(CsrIndC[iNonzeroC]==iColumnC);
 							const int jRowC    = DIM*jP+sD;
 							const int jColumnC = jNP;
-							const int jNonzeroC= CsrPtrC[jRowC]+jNeigh;
+							const long int jNonzeroC= CsrPtrC[jRowC]+jNeigh;
 							// assert(CsrIndC[jNonzeroC]==jColumnC);
 							sum[rD][sD] += CsrCofC[ iNonzeroC ] * Lambda[iNP] * CsrCofC[ jNonzeroC ];
 						}
@@ -2531,7 +2795,7 @@ static void multiplyMatrixC( void )
 				for(int sD=0;sD<DIM;++sD){
 					const int iRowA    = DIM*iP+rD;
 					const int iColumnA = DIM*jP+sD;
-					const int iNonzeroA= CsrPtrA[iRowA]+DIM*jN+sD;
+					const long int iNonzeroA= CsrPtrA[iRowA]+DIM*jN+sD;
 					// assert(CsrIndA[ iNonzeroA ]==iColumnA);
 					CsrCofA[iNonzeroA] += sum[rD][sD];
 				}
@@ -2699,20 +2963,20 @@ static void calculateMultiGridDepth( void ){
 		}
 	}
 	
-	double maxGridWidth=0.0;
-	if(CellWidth*(iCXmax-iCXmin)>maxGridWidth){
-		maxGridWidth=CellWidth*(iCXmax-iCXmin+1);
+	double maxGridCount=0.0;
+	if((iCXmax-iCXmin)>maxGridCount){
+		maxGridCount=(iCXmax-iCXmin+1);
 	}
-	if(CellWidth*(iCYmax-iCYmin)>maxGridWidth){
-		maxGridWidth=CellWidth*(iCYmax-iCYmin+1);
+	if((iCYmax-iCYmin)>maxGridCount){
+		maxGridCount=(iCYmax-iCYmin+1);
 	}
-	if(CellWidth*(iCZmax-iCZmin)>maxGridWidth){
-		maxGridWidth=CellWidth*(iCZmax-iCZmin+1);
+	if((iCZmax-iCZmin)>maxGridCount){
+		maxGridCount=(iCZmax-iCZmin+1);
 	}
 	
 	{
 		int iPower=0;
-		while((1<<iPower)*CellWidth <= maxGridWidth){
+		while((1<<iPower) <= maxGridCount){
 			iPower++;
 		}
 		MultiGridDepth=iPower;
@@ -2948,26 +3212,22 @@ static void calculateInvDiagA( void ){
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iRow=0;iRow<N;++iRow){
-		InvDiagA[iRow] = -1.0*__LINE__;;
+		InvDiagA[iRow] = 0.0;
 	}
 	
 	#pragma acc kernels present(InvDiagA[0:N], CsrPtrA[0:N+1],CsrIndA[0:NonzeroCountA],CsrCofA[0:NonzeroCountA])
 	#pragma acc loop independent
 	#pragma omp parallel for 
 	for(int iRow=0;iRow<N;++iRow){
-		double sumCof=0.0;
 		#pragma acc loop seq
-		for(int iNonzero=CsrPtrA[iRow];iNonzero<CsrPtrA[iRow+1];++iNonzero){
-			sumCof+=abs(CsrCofA[iNonzero]);
-		}
-		if(sumCof!=0.0){
-			InvDiagA[iRow] = 2.0/sumCof;
-		}
-		else{
-			InvDiagA[iRow] = 0.0;
+		for(long int iNonzero=CsrPtrA[iRow];iNonzero<CsrPtrA[iRow+1];++iNonzero){
+			if(CsrIndA[iNonzero]==iRow){
+				if(CsrCofA[iNonzero]!=0.0){
+					InvDiagA[iRow] = 1.0/CsrCofA[iNonzero];
+				}
+			}
 		}
 	}
-	
 }
 
 static void calculateMultiGridCsrR( void ){
@@ -3276,7 +3536,7 @@ static void calculateMultiGridCsrA( void ){
 			for(int iP=CellFluidParticleBegin[iC];iP<CellFluidParticleEnd[iC];++iP){
 				const int iRowP=DIM*iP+rD;				
 				#pragma acc loop seq
-				for(int iNonzeroP=CsrPtrA[iRowP];iNonzeroP<CsrPtrA[iRowP+1];++iNonzeroP){
+				for(long int iNonzeroP=CsrPtrA[iRowP];iNonzeroP<CsrPtrA[iRowP+1];++iNonzeroP){
 					const int iColumnP =CsrIndA[iNonzeroP];
 					const int jP = iColumnP/DIM;
 					const int sD = iColumnP%DIM;
@@ -3448,353 +3708,6 @@ static void calculateMultiGridInvDiagA( void ){
 }
 
 
-
-static void allocateDenssMat(const int N, const int M, double (**&mat)){
-	mat = (double **)malloc( N * sizeof(double *) );
-	for(int iRow=0;iRow<N;++iRow){
-		mat[iRow]=(double *)malloc( M * sizeof(double) );
-	}
-}
-
-static void setDenssMat(const int N, const int M, const int nnz, const int *csrptr, const int *csrind, const double *csrcof, double **mat){
-			fprintf(stderr,"line:%d\n",__LINE__);
-
-	for(int iRow=0;iRow<N;++iRow){
-		for(int iColumn=0;iColumn<M;++iColumn){
-			mat[iRow][iColumn]=0.0;
-		}
-	}
-		fprintf(stderr,"line:%d\n",__LINE__);
-
-	for(int iRow=0;iRow<N;++iRow){
-		for(int iNonzero=csrptr[iRow];iNonzero<csrptr[iRow+1];++iNonzero){
-			const int iColumn = csrind[iNonzero];
-			mat[iRow][iColumn] += csrcof[iNonzero];
-		}
-	}
-			fprintf(stderr,"line:%d\n",__LINE__);
-
-}
-
-static void writeDenssMat(const int N, const int M, double **mat, const char *filename){
-	FILE *fp=fopen(filename,"w");
-	for(int iRow=0;iRow<N;++iRow){
-		for(int iColumn=0;iColumn<M;++iColumn){
-			fprintf(fp,"%e,",mat[iRow][iColumn]);
-		}
-		fprintf(fp,"\n");
-	}
-	fclose(fp);
-}
-
-static void freeDenssMat(const int N, const int M, double **mat){
-	for(int iRow=0;iRow<N;++iRow){
-		free(mat[iRow]);
-	}
-	free(mat);
-}
-
-static void checkMultiGridMatrix( void ){
-	
-		
-	const int fluidcount = FluidParticleEnd-FluidParticleBegin;
-	const int totalGridCount = MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
-	
-	#pragma acc update host(CsrPtrP2G[0:DIM*totalGridCount+1])
-	#pragma acc update host(CsrIndP2G[0:CsrNnzP2G],CsrCofP2G[0:CsrNnzP2G])
-	#pragma acc update host(CsrPtrG2P[0:DIM*fluidcount+1])
-	#pragma acc update host(CsrIndG2P[0:CsrNnzG2P],CsrCofG2P[0:CsrNnzG2P])
-	//#pragma acc update host(MultiGridCsrNnzR[0:MultiGridDepth])
-	#pragma acc update host(MultiGridCsrPtrR[0:AllGridSizeCsrPtrR])
-	#pragma acc update host(MultiGridCsrIndR[0:AllGridSizeCsrIndR],MultiGridCsrCofR[0:AllGridSizeCsrIndR])
-	//#pragma acc update host(MultiGridCsrNnzP[0:MultiGridDepth])
-	#pragma acc update host(MultiGridCsrPtrP[0:AllGridSizeCsrPtrP])
-	#pragma acc update host(MultiGridCsrIndP[0:AllGridSizeCsrIndP],MultiGridCsrCofP[0:AllGridSizeCsrIndP])
-	
-	
-	
-	log_printf("MultiGridDepth=%d\n",MultiGridDepth);
-	for(int iPower=0;iPower<MultiGridDepth;++iPower){
-		log_printf("MultiGridCellMin[%d]=(%d,%d,%d)\n",iPower, MultiGridCellMin[iPower][0],MultiGridCellMin[iPower][1],MultiGridCellMin[iPower][2]);
-		log_printf("MultiGridCellMax[%d]=(%d,%d,%d)\n",iPower, MultiGridCellMax[iPower][0],MultiGridCellMax[iPower][1],MultiGridCellMax[iPower][2]);
-		log_printf("MultiGridCount[%d]  =(%d,%d,%d)\n",iPower, MultiGridCount[iPower][0],  MultiGridCount[iPower][1],  MultiGridCount[iPower][2]);
-	}
-	log_printf("TopGridCount=(%d x %d x %d)=%d\n", TopGridCount[0],TopGridCount[1],TopGridCount[2],TotalTopGridCount);
-
-
-	fprintf(stderr,"line:%d\n",__LINE__);
-	double **denssA;
-	// CsrA
-	{
-		int N = DIM*fluidcount;
-		int M = DIM*fluidcount;
-		allocateDenssMat(N,M,denssA);
-		setDenssMat(N,M,NonzeroCountA,CsrPtrA,CsrIndA,CsrCofA,denssA);
-		writeDenssMat(N,M,denssA,"CsrA.csv");
-	}
-	
-	
-
-	// CsrP2G
-	double **denssP2G;
-	fprintf(stderr,"line:%d\n",__LINE__);
-	{
-		int N = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
-		int M = DIM*fluidcount;
-		fprintf(stderr,"line:%d\n",__LINE__);
-		allocateDenssMat(N,M,denssP2G);
-		fprintf(stderr,"line:%d\n",__LINE__);
-		setDenssMat(N,M,CsrNnzP2G,CsrPtrP2G,CsrIndP2G,CsrCofP2G,denssP2G);
-		fprintf(stderr,"line:%d\n",__LINE__);
-		writeDenssMat(N,M,denssP2G,"CsrP2G.csv");
-		fprintf(stderr,"line:%d\n",__LINE__);
-	}
-	
-	// CsrG2P
-	double **denssG2P;
-	fprintf(stderr,"line:%d\n",__LINE__);
-	{
-		int N = DIM*fluidcount;
-		int M = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
-		allocateDenssMat(N,M,denssG2P);
-		setDenssMat(N,M,CsrNnzG2P,CsrPtrG2P,CsrIndG2P,CsrCofG2P,denssG2P);
-		writeDenssMat(N,M,denssG2P,"CsrG2P.csv");
-	}
-	
-	double **denssMultiA0;
-	// CsrMultiA0
-	fprintf(stderr,"line:%d\n",__LINE__);
-	{
-		const int iPower=0;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
-		const int *gridCount = MultiGridCount[iPower];
-		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		int M = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		
-		allocateDenssMat(N,M,denssMultiA0);
-		setDenssMat(N,M,MultiGridCsrNnzA[iPower],&MultiGridCsrPtrA[offsetPtr],&MultiGridCsrIndA[offsetInd],&MultiGridCsrCofA[offsetInd],denssMultiA0);
-		writeDenssMat(N,M,denssMultiA0,"MultiA0.csv");
-	}
-	
-	double **denssMultiR1;
-	// CsrMultiR1
-	
-	fprintf(stderr,"line:%d\n",__LINE__);
-	{
-		const int iPower=1;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndR;
-		const int *gridCountL = MultiGridCount[iPower];
-		const int *gridCountS = MultiGridCount[iPower-1];
-		int N = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-		int M = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-		fprintf(stderr,"line:%d, iPower=%d, MultiGridCsrR[iPower]\n",__LINE__,iPower);
-		fprintf(stderr,"MultiGridCsrNnzR[iPower]=%d\n", MultiGridCsrNnzR[iPower]);
-		for(int iRow=0;iRow<N;++iRow){
-			fprintf(stderr, "%d:(%d,%d)\n", iRow, MultiGridCsrPtrR[offsetPtr+iRow], MultiGridCsrPtrR[offsetPtr+iRow+1]);
-		}
-		allocateDenssMat(N,M,denssMultiR1);
-		setDenssMat(N,M,MultiGridCsrNnzR[iPower],&MultiGridCsrPtrR[offsetPtr],&MultiGridCsrIndR[offsetInd],&MultiGridCsrCofR[offsetInd],denssMultiR1);
-		writeDenssMat(N,M,denssMultiR1,"MultiR1.csv");
-	}
-
-	double **denssMultiR2;
-	// CsrMultiR2
-	fprintf(stderr,"line:%d\n",__LINE__);
-	if(2<MultiGridDepth){
-		const int iPower=2;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndR;
-		const int *gridCountL = MultiGridCount[iPower];
-		const int *gridCountS = MultiGridCount[iPower-1];
-		int N = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-		int M = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-		fprintf(stderr,"line:%d, iPower=%d, MultiGridCsrR[iPower]\n",__LINE__,iPower);
-		fprintf(stderr,"MultiGridCsrNnzR[iPower]=%d\n", MultiGridCsrNnzR[iPower]);
-		for(int iRow=0;iRow<N;++iRow){
-			fprintf(stderr, "%d:(%d,%d)\n", iRow, MultiGridCsrPtrR[offsetPtr+iRow], MultiGridCsrPtrR[offsetPtr+iRow+1]);
-		}
-		allocateDenssMat(N,M,denssMultiR2);
-		setDenssMat(N,M,MultiGridCsrNnzR[iPower],&MultiGridCsrPtrR[offsetPtr],&MultiGridCsrIndR[offsetInd],&MultiGridCsrCofR[offsetInd],denssMultiR2);
-		writeDenssMat(N,M,denssMultiR2,"MultiR2.csv");
-	}
-
-	
-	
-	
-	double **denssMultiP1;
-	// CsrMultiP1
-	fprintf(stderr,"line:%d\n",__LINE__);
-	{
-		const int iPower=1;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndP;
-		const int *gridCountL = MultiGridCount[iPower];
-		const int *gridCountS = MultiGridCount[iPower-1];
-		int N = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-		int M = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-		allocateDenssMat(N,M,denssMultiP1);
-		setDenssMat(N,M,MultiGridCsrNnzP[iPower],&MultiGridCsrPtrP[offsetPtr],&MultiGridCsrIndP[offsetInd],&MultiGridCsrCofP[offsetInd],denssMultiP1);
-		writeDenssMat(N,M,denssMultiP1,"MultiP1.csv");
-	}
-	
-	
-	double **denssMultiP2;
-	// CsrMultiP2
-	fprintf(stderr,"line:%d\n",__LINE__);
-	if(2<MultiGridDepth){
-		const int iPower=2;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndP;
-		const int *gridCountL = MultiGridCount[iPower];
-		const int *gridCountS = MultiGridCount[iPower-1];
-		int N = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-		int M = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-		allocateDenssMat(N,M,denssMultiP2);
-		setDenssMat(N,M,MultiGridCsrNnzP[iPower],&MultiGridCsrPtrP[offsetPtr],&MultiGridCsrIndP[offsetInd],&MultiGridCsrCofP[offsetInd],denssMultiP2);
-		writeDenssMat(N,M,denssMultiP2,"MultiP2.csv");
-	}
-	
-	double **denssMultiA1;
-	// CsrMultiA1
-	fprintf(stderr,"line:%d\n",__LINE__);
-	{
-		const int iPower=1;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
-		const int *gridCount = MultiGridCount[iPower];
-		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		int M = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		allocateDenssMat(N,M,denssMultiA1);
-		setDenssMat(N,M,MultiGridCsrNnzA[iPower],&MultiGridCsrPtrA[offsetPtr],&MultiGridCsrIndA[offsetInd],&MultiGridCsrCofA[offsetInd],denssMultiA1);
-		writeDenssMat(N,M,denssMultiA1,"MultiA1.csv");
-	}
-	
-	double **denssMultiA2;
-	// CsrMultiA2
-	fprintf(stderr,"line:%d\n",__LINE__);
-	if(2<MultiGridDepth){
-		const int iPower=2;
-		int offsetPtr = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-		int offsetInd = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
-		const int *gridCount = MultiGridCount[iPower];
-		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		int M = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		allocateDenssMat(N,M,denssMultiA2);
-		setDenssMat(N,M,MultiGridCsrNnzA[iPower],&MultiGridCsrPtrA[offsetPtr],&MultiGridCsrIndA[offsetInd],&MultiGridCsrCofA[offsetInd],denssMultiA2);
-		writeDenssMat(N,M,denssMultiA2,"MultiA2.csv");
-	}
-	
-	fprintf(stderr,"line:%d\n",__LINE__);
-	// InvDiagA
-	{
-		FILE *fp = fopen("InvDiagA.csv","w");
-		int N = DIM*fluidcount;
-		for(int iRow=0;iRow<N;++iRow){
-			fprintf(fp, "%e,\n", InvDiagA[ iRow ]);
-		}
-		fclose(fp);
-	}
-	
-	
-	
-	if(0<MultiGridDepth){
-		FILE *fp = fopen("InvD0.csv","w");
-		const int iPower=0;
-		int offset = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
-		const int *gridCount = MultiGridCount[iPower];
-		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		for(int iRow=0;iRow<N;++iRow){
-			fprintf(fp, "%e,\n", MultiGridInvDiagA[ offset + iRow ]);
-		}
-		fclose(fp);
-	}
-	if(1<MultiGridDepth){
-		FILE *fp = fopen("InvD1.csv","w");
-		const int iPower=1;
-		int offset = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
-		const int *gridCount = MultiGridCount[iPower];
-		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		for(int iRow=0;iRow<N;++iRow){
-			fprintf(fp, "%e,\n", MultiGridInvDiagA[ offset + iRow ]);
-		}
-		fclose(fp);
-	}
-	if(2<MultiGridDepth){
-		FILE *fp = fopen("InvD2.csv","w");
-		const int iPower=2;
-		int offset = MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
-		const int *gridCount = MultiGridCount[iPower];
-		int N = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-		for(int iRow=0;iRow<N;++iRow){
-			fprintf(fp, "%e,\n", MultiGridInvDiagA[ offset + iRow ]);
-		}
-		fclose(fp);
-	}	
-	//	double **denssR1A0P1;
-//	fprintf(stderr,"line:%d\n",__LINE__);
-//	{
-//		const int iPower=1;
-//		const int *gridCountL = MultiGridCount[iPower];
-//		const int *gridCountS = MultiGridCount[iPower-1];
-//		int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-//		int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-//		allocateDenssMat(NL,NL,denssR1A0P1);
-//
-//		for(int iP=0;iP<NL;++iP){
-//			for(int iQ=0;iQ<NL;++iQ){
-//				denssR1A0P1[iP][iQ]=0.0;
-//			}
-//		}
-//
-//		for(int iP=0;iP<NL;++iP){
-//			for(int iQ=0;iQ<NL;++iQ){
-//				for(int iR=0;iR<NS;++iR){
-//					for(int iS=0;iS<NS;++iS){
-//						double tmp = 1.0;
-//						denssR1A0P1[iP][iQ] += denssMultiR1[iP][iR]*denssMultiA0[iR][iS]*denssMultiP1[iS][iQ];
-//					}
-//				}
-//			}
-//		}
-//		writeDenssMat(NL,NL,denssR1A0P1,"R1A0P1.csv");
-//	}
-	
-//	double **denssP2GAG2P;
-//	fprintf(stderr,"line:%d\n",__LINE__);
-//	{
-//		int NP = DIM*fluidcount;
-//		const int iPower=0;
-//		const int *gridCount = MultiGridCount[iPower];
-//		int NG = DIM*gridCount[0]*gridCount[1]*gridCount[2];
-//
-//		allocateDenssMat(NG,NG,denssP2GAG2P);
-//		for(int iP=0;iP<NG;++iP){
-//			for(int iQ=0;iQ<NG;++iQ){
-//				denssP2GAG2P[iP][iQ]=0.0;
-//			}
-//		}
-//		
-//		for(int iP=0;iP<NG;++iP){
-//			for(int iQ=0;iQ<NG;++iQ){
-//				for(int iR=0;iR<NP;++iR){
-//					for(int iS=0;iS<NP;++iS){
-//						denssP2GAG2P[iP][iQ] += denssP2G[iP][iR]*denssA[iR][iS]*denssG2P[iS][iQ];
-//					}
-//				}
-//			}
-//		}	
-//		writeDenssMat(NG,NG,denssP2GAG2P,"P2GAG2A.csv");
-//	}
-	
-	exit(1);
-
-}
-
-	
-
-
 static void freeMultiGridMatrix( void ){
 	
 	free(MultiGridCellMin);
@@ -3849,7 +3762,7 @@ static void freeMultiGridMatrix( void ){
 
 
 #ifdef _CUDA
-static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n, const int nnz, const double alpha, double *csrVal, int *csrRowPtr, int *csrColInd, double *x, const double beta, double *y )
+static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n, const long int nnz, const double alpha, double *csrVal, long int *csrRowPtr, int *csrColInd, double *x, const double beta, double *y )
 {
 	static int init_flag=0;
 	static size_t bufferSize=0;
@@ -3862,7 +3775,7 @@ static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n
 	}
 	
 	cusparseSpMatDescr_t mat;
-	cusparseCreateCsr( &mat, m, n, nnz, csrRowPtr, csrColInd, csrVal, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
+	cusparseCreateCsr( &mat, m, n, nnz, csrRowPtr, csrColInd, csrVal, CUSPARSE_INDEX_64I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
 	cusparseDnVecDescr_t vecX;
 	cusparseCreateDnVec( &vecX, n, x, CUDA_R_64F );
 	cusparseDnVecDescr_t vecY;
@@ -3948,7 +3861,6 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 	const int dim=3;
 	#endif
 	
-	
 	#pragma acc host_data use_device(                         \
 		InvDiagA,                                             \
 		CsrCofP2G, CsrPtrP2G, CsrIndP2G,                      \
@@ -4012,7 +3924,7 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 			
 			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL]);
 			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<2;++iter){
+			for(int iter=0;iter<3;++iter){
 				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
@@ -4040,7 +3952,7 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 			
 			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL] );
 			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<3;++iter){
+			for(int iter=0;iter<4;++iter){
 				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 
@@ -4064,7 +3976,7 @@ static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cu
 			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
 			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
 			
-			for(int iter=0;iter<2;++iter){
+			for(int iter=0;iter<3;++iter){
 				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
 				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
@@ -4164,15 +4076,21 @@ static void solveWithConjugatedGradient(void){
 			mydevDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
 		}
 		
+		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid(cublas,cusparse, b, s, buf );
-		//cublasDcopy(cublas,N,b,1,s,1);
+		#else
+		cublasDcopy(cublas,N,b,1,s,1);
+		#endif
 		cublasDdot(cublas,N,b,1,s,1,&rs0);
 		cublasDdot(cublas,N,b,1,b,1,&rr0);
 		
 		cublasDcopy(cublas,N,b,1,r,1);
 		mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
+		#ifdef MULTIGRID_SOLVER
 		preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
-		//cublasDcopy(cublas,N,r,1,s,1);
+		#else
+		cublasDcopy(cublas,N,r,1,s,1);
+		#endif
 		
 		for(iter=0;iter<N;++iter){
 			cublasDdot(cublas,N,r,1,r,1,&rr);
@@ -4196,8 +4114,11 @@ static void solveWithConjugatedGradient(void){
 				cublasDscal(cublas,N,&beta,q,1);
 				cublasDaxpy(cublas,N,&one,y,1,q,1);
 			}
+			#ifdef MULTIGRID_SOLVER
 			preconditionWithMultiGrid(cublas,cusparse, q, u, buf ); 
-			//cublasDcopy(cublas,N,q,1,u,1);
+			#else
+			cublasDcopy(cublas,N,q,1,u,1);
+			#endif
 			cublasDdot(cublas,N,q,1,u,1,&tmp);
 			alpha =rho/tmp;
 			cublasDaxpy(cublas,N,&alpha,p,1,x,1);
@@ -4214,8 +4135,11 @@ static void solveWithConjugatedGradient(void){
 			#ifdef CONVERGENCE_CHECK
 			cublasDcopy(cublas,N,b,1,r,1);
 			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
+			#ifdef MULTIGRID_SOLVER
 			preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
-			//cublasDcopy(cublas,N,r,1,s,1);
+			#else
+			cublasDcopy(cublas,N,r,1,s,1);
+			#endif
 			cublasDdot(cublas,N,r,1,r,1,&rr);
 			cublasDdot(cublas,N,r,1,s,1,&rs);
 			log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
@@ -4259,16 +4183,16 @@ static void myDcsrmv( const int m, const int n, const int nnz, const double alph
 	for(int iRow=0;iRow<m; ++iRow){
 		double sum = 0.0;
 		#pragma acc loop seq
-		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
-			const int iColumn=csrColInd[iNonZero];
-			sum += alpha*csrVal[iNonZero]*x[iColumn];
+		for(int iNonzero=csrRowPtr[iRow];iNonzero<csrRowPtr[iRow+1];++iNonzero){
+			const int iColumn=csrColInd[iNonzero];
+			sum += alpha*csrVal[iNonzero]*x[iColumn];
 		}
 		y[iRow] *= beta;
 		y[iRow] += sum;
 	}
 }
 
-static void myDcsrmvForA( const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
+static void myDcsrmvForA( const int m, const int n, const long int nnz, const double alpha, const double *csrVal, const long int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
 {
 	#pragma acc kernels deviceptr(csrVal,csrRowPtr,csrColInd,x,y)
 	//#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
@@ -4278,9 +4202,9 @@ static void myDcsrmvForA( const int m, const int n, const int nnz, const double 
 		double sum = 0.0;
 		//#pragma acc loop seq
 		#pragma acc loop reduction(+:sum) vector
-		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
-			const int iColumn=csrColInd[iNonZero];
-			sum += alpha*csrVal[iNonZero]*x[iColumn];
+		for(long int iNonzero=csrRowPtr[iRow];iNonzero<csrRowPtr[iRow+1];++iNonzero){
+			const int iColumn=csrColInd[iNonzero];
+			sum += alpha*csrVal[iNonzero]*x[iColumn];
 		}
 		y[iRow] *= beta;
 		y[iRow] += sum;
@@ -4424,7 +4348,7 @@ static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ 
 			
 			myDscal( NL, 0.0, &MultiGridVecS[offsetL] );
 			myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<2;++iter){
+			for(int iter=0;iter<3;++iter){
 				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
@@ -4451,7 +4375,7 @@ static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ 
 			
 			myDscal( NL, 0.0, &MultiGridVecS[offsetL] );
 			myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<3;++iter){
+			for(int iter=0;iter<4;++iter){
 				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
 				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
@@ -4473,7 +4397,7 @@ static void preconditionWithMultiGrid( const double *q, double *s, double *r ){ 
 			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
 			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
 			
-			for(int iter=0;iter<2;++iter){
+			for(int iter=0;iter<3;++iter){
 				myDcopy( NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
 				myDcsrmv( NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
 				myDdmv( NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
@@ -4563,20 +4487,21 @@ static void solveWithConjugatedGradient(void){
 			myDset( AllGridSizeVecR, -1.0*__LINE__, MultiGridVecR );
 			myDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
 		}
-		
-		preconditionWithMultiGrid( b, s, buf );  
-		//	myDcopy( N, b, s ); //
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid( b, s, buf );
+		#else
+		myDcopy( N, b, s );
+		#endif
 		myDdot( N, b, s, &rs0 );
 		myDdot( N, b, b, &rr0 );
-		if(!(rs0==rs0)){
-			log_printf("line:%d, rs0=%e\n",__LINE__,rs0);
-			checkMultiGridMatrix();
-		}
 		
 		myDcopy( N, b, r );	
 		myDcsrmvForA( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-		preconditionWithMultiGrid( r, s, buf );  //
-		//	myDcopy( N, r, s ); //
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid( r, s, buf );
+		#else
+		myDcopy( N, r, s );
+		#endif
 		
 		for(iter=0;iter<N;++iter){
 			myDdot( N, r, r, &rr );
@@ -4600,8 +4525,11 @@ static void solveWithConjugatedGradient(void){
 				myDscal( N, beta, q );
 				myDaxpy( N, 1.0, y, q );
 			}
-			preconditionWithMultiGrid( q, u, buf ); //
-			//	myDcopy( N, q, u ); //
+			#ifdef MULTIGRID_SOLVER
+			preconditionWithMultiGrid( q, u, buf );
+			#else
+			myDcopy( N, q, u );
+			#endif
 			myDdot( N, q, u, &tmp );
 			alpha =rho/tmp;
 			myDaxpy( N, alpha, p, x );
@@ -4619,8 +4547,11 @@ static void solveWithConjugatedGradient(void){
 	{
 		myDcopy( N, b, r );	
 		myDcsrmvForA( N, N, NonzeroCountA, -1.0, CsrCofA, CsrPtrA, CsrIndA, x, 1.0, r );
-		preconditionWithMultiGrid( r, s, buf );  //
-		//	myDcopy( N, b, s ); //
+		#ifdef MULTIGRID_SOLVER
+		preconditionWithMultiGrid( r, s, buf );
+		#else
+		myDcopy( N, b, s );
+		#endif
 		myDdot( N, r, r, &rr );
 		myDdot( N, r, s, &rs );
 	}
@@ -4659,63 +4590,64 @@ static void solveWithConjugatedGradient(void){
 static void calculateVirialPressureAtParticle()
 {
     const double (*x)[DIM] = Position;
-    const double (*p) = PressureP;
-
-	#pragma acc kernels present(x[0:ParticleCount][0:DIM],p[0:ParticleCount])
+	const double (*p) = PressureP;
+	
+	#pragma acc kernels present(x[0:ParticleCount][0:DIM],p[0:ParticleCount],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
-    for(int iP=0;iP<ParticleCount;++iP){
-    	double virialAtParticle=0.0;
-    	#pragma acc loop seq
-        for(int iN=0;iN<NeighborCountP[iP];++iN){
-            const int jP=NeighborP[iP][iN];
-        	if(iP==jP)continue;
-            double xij[DIM];
-        	#pragma acc loop seq
-            for(int iD=0;iD<DIM;++iD){
-                xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-            }
-            const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-            if(RadiusP*RadiusP - rij2 > 0){
-                const double rij = sqrt(rij2);
-                const double dwij = dwpdr(rij,RadiusP);
-                virialAtParticle -= 0.5*(p[iP]+p[jP])*dwij*rij*ParticleVolume;
-            }
-        }
-#ifdef TWO_DIMENSIONAL
-        VirialPressureAtParticle[iP] = 1.0/2.0/ParticleVolume * virialAtParticle;
-#else
-    	VirialPressureAtParticle[iP] = 1.0/3.0/ParticleVolume * virialAtParticle;
-#endif
-    }
+	for(int iP=0;iP<ParticleCount;++iP){
+		double virialAtParticle=0.0;
+		#pragma acc loop seq
+		for(int jN=0;jN<NeighborCountP[iP];++jN){
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ];
+			if(iP==jP)continue;
+			double xij[DIM];
+			#pragma acc loop seq
+			for(int iD=0;iD<DIM;++iD){
+				xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+			}
+			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
+			if(RadiusP*RadiusP - rij2 > 0){
+				const double rij = sqrt(rij2);
+				const double dwij = dwpdr(rij,RadiusP);
+				virialAtParticle -= 0.5*(p[iP]+p[jP])*dwij*rij*ParticleVolume;
+			}
+		}
+		#ifdef TWO_DIMENSIONAL
+		VirialPressureAtParticle[iP] = 1.0/2.0/ParticleVolume * virialAtParticle;
+		#else
+		VirialPressureAtParticle[iP] = 1.0/3.0/ParticleVolume * virialAtParticle;
+		#endif
+	}
 }
 
 static void calculateVirialPressureInsideRadius()
 {
 	const double (*x)[DIM] = Position;
 	
-	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM],VirialPressureAtParticle[0:ParticleCount])
+	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM],VirialPressureAtParticle[0:ParticleCount],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		int count=1;
 		double sum = VirialPressureAtParticle[iP];
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCountP[iP];++iN){
-            const int jP=NeighborP[iP][iN];
+		for(int jN=0;jN<NeighborCountP[iP];++jN){
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP)continue;
 			if(WALL_BEGIN<=Property[jP] && Property[jP]<WALL_END)continue;
-            double xij[DIM];
+			double xij[DIM];
 			#pragma acc loop seq
-            for(int iD=0;iD<DIM;++iD){
-                xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
-            }
-            const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-            if(RadiusP*RadiusP - rij2 > 0){
-            	count +=1;
-                sum += VirialPressureAtParticle[jP];
-            }
-        }
+			for(int iD=0;iD<DIM;++iD){
+				xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
+			}
+			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(RadiusP*RadiusP - rij2 > 0){
+				count +=1;
+				sum += VirialPressureAtParticle[jP];
+			}
+		}
 		VirialPressureInsideRadius[iP] = sum/count;
 	}
 }
@@ -4724,9 +4656,8 @@ static void calculateVirialPressureInsideRadius()
 static void calculateVirialStressAtParticle()
 {
 	const double (*x)[DIM] = Position;
-	const double (*v)[DIM] = Velocity;
+	const double (*v)[DIM] = Velocity;	
 	
-
 	#pragma acc kernels 
 	#pragma acc loop independent
 	#pragma omp parallel for
@@ -4740,14 +4671,14 @@ static void calculateVirialStressAtParticle()
 		}
 	}
 	
-	#pragma acc kernels present(x[0:ParticleCount][0:DIM])
+	#pragma acc kernels present(x[0:ParticleCount][0:DIM],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double stress[DIM][DIM]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCountP[iP];++iN){
-			const int jP=NeighborP[iP][iN];
+		for(int jN=0;jN<NeighborCountP[iP];++jN){
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP)continue;
 			double xij[DIM];
 			#pragma acc loop seq
@@ -4755,6 +4686,7 @@ static void calculateVirialStressAtParticle()
 				xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
 			}
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
+			if(rij2==0.0)continue;
 			
 			// pressureP
 			if(RadiusP*RadiusP - rij2 > 0){
@@ -4784,14 +4716,14 @@ static void calculateVirialStressAtParticle()
 		}
 	}
 	
-	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM])
+	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent	
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double stress[DIM][DIM]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCount[iP];++iN){
-			const int jP=Neighbor[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
 			double xij[DIM];
 			#pragma acc loop seq
@@ -4799,7 +4731,7 @@ static void calculateVirialStressAtParticle()
 				xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
 			}
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-			
+			if(rij2==0.0)continue;
 			
 			// pressureA
 			if(RadiusA*RadiusA - rij2 > 0){
@@ -4831,14 +4763,14 @@ static void calculateVirialStressAtParticle()
 
 	}
 	
-	#pragma acc kernels present(x[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Mu[0:ParticleCount],MuS[0:ParticleCount],SigY[0:ParticleCount],MuP[0:ParticleCount])
+	#pragma acc kernels present(x[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Mu[0:ParticleCount],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent	
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double stress[DIM][DIM]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCount[iP];++iN){
-			const int jP=Neighbor[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
 			double xij[DIM];
 			#pragma acc loop seq
@@ -4846,7 +4778,7 @@ static void calculateVirialStressAtParticle()
 				xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
 			}
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-			
+			if(rij2==0.0)continue;
 			
 			// viscosity term
 			if(RadiusV*RadiusV - rij2 > 0){
@@ -4854,19 +4786,7 @@ static void calculateVirialStressAtParticle()
 				const double dwij = -dwvdr(rij,RadiusV);
 				const double eij[DIM] = {xij[0]/rij,xij[1]/rij,xij[2]/rij};
 				const double vij[DIM] = {v[jP][0]-v[iP][0],v[jP][1]-v[iP][1],v[jP][2]-v[iP][2]};
-				
-				// 20230514 added by Masahiro Kondo for Bingham calculation
-				#ifdef BINGHAM
-				// Bingham  // 20221111 modified by Masahiro Kondo
-				const double uij[DIM] = {v[jP][0]-v[iP][0],v[jP][1]-v[iP][1],v[jP][2]-v[iP][2]};
-				double strainrate = 2.0*fabs(uij[0]*eij[0]+uij[1]*eij[1]+uij[2]*eij[2])/rij;
-				const double mui = shearviscosity( strainrate, MuS[iP], SigY[iP], MuP[iP] );
-				const double muj = shearviscosity( strainrate, MuS[jP], SigY[jP], MuP[jP] );
-				const double muij = 2.0*(mui*muj)/(mui+muj);
-				#else
-				 const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
-				#endif
-				
+				const double muij = 2.0*(Mu[iP]*Mu[jP])/(Mu[iP]+Mu[jP]);
 				double fij[DIM] = {0.0,0.0,0.0};
 				#pragma acc loop seq
 				for(int iD=0;iD<DIM;++iD){
@@ -4894,14 +4814,14 @@ static void calculateVirialStressAtParticle()
 		}
 	}
 	
-	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM])
+	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent	
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double stress[DIM][DIM]={{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
 		#pragma acc loop seq
-		for(int iN=0;iN<NeighborCount[iP];++iN){
-			const int jP=Neighbor[iP][iN];
+		for(int jN=0;jN<NeighborCount[iP];++jN){
+			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
 			if(iP==jP)continue;
 			double xij[DIM];
 			#pragma acc loop seq
@@ -4909,7 +4829,7 @@ static void calculateVirialStressAtParticle()
 				xij[iD] = Mod(x[jP][iD] - x[iP][iD] +0.5*DomainWidth[iD] , DomainWidth[iD]) -0.5*DomainWidth[iD];
 			}
 			const double rij2 = (xij[0]*xij[0] + xij[1]*xij[1] + xij[2]*xij[2]);
-			
+			if(rij2==0.0)continue;
 			
 			// diffuse interface force (1st term)
 			if(RadiusG*RadiusG - rij2 > 0){
