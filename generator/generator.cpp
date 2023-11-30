@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include "log.h"
 #include "typedefs.h"
 
@@ -49,36 +50,57 @@ void readfile(const char* fname)
 {
     char buf[1024];
     char token[256];
-    int pcldistflag=0, lowerflag=0, upperflag=0;
+    bool pcldistflag, lowerflag, upperflag,errflag;
+    pcldistflag = lowerflag=upperflag=errflag=false;
     FILE *fp = fopen(fname,"r");
-    while(fp!=NULL && !feof(fp) && !ferror(fp)){
+    if (fp == NULL){
+        fprintf(stderr,"error: cannot read file %s!\n",fname);
+        exit(-1);
+    }
+    while(!feof(fp) && !ferror(fp)){
         if(fgets(buf,sizeof(buf),fp)==NULL)continue;
         if(buf[0]=='#')continue;
-        if(sscanf(buf,"%s",token)!=1){fprintf(stderr,"token:%s\n",token);continue;}
+        if(sscanf(buf,"%s",token)!=1){
+            fprintf(stderr,"token:%s\n",token);
+            continue;
+        }
     	//fprintf(stderr,"%s\n",token);
         if(strcmp(token,"ParticleDistance")==0){
-            if(sscanf(buf," %*s %lf",&ParticleDistance)!=1){fprintf(stderr,"ParticleDistance count not 1\n");goto err;}
-            pcldistflag=1;
+            if(sscanf(buf," %*s %lf",&ParticleDistance)!=1){
+                fprintf(stderr,"ParticleDistance count not 1\n");
+                errflag=1;
+                break;
+            }
+            pcldistflag=true;
         }
         if(strcmp(token,"LowerDomain")==0){
-            if(sscanf(buf," %*s %lf %lf %lf",&LowerDomain[0], &LowerDomain[1], &LowerDomain[2])!=3){fprintf(stderr,"LowerDomain count not 3\n");goto err;}
-            lowerflag=1;
+            if(sscanf(buf," %*s %lf %lf %lf",&LowerDomain[0], &LowerDomain[1], &LowerDomain[2])!=3){
+                fprintf(stderr,"LowerDomain count not 3\n");
+                errflag=true;
+                break;
+            }
+            lowerflag=true;
         }
         if(strcmp(token,"UpperDomain")==0){
-            if(sscanf(buf," %*s %lf %lf %lf",&UpperDomain[0], &UpperDomain[1], &UpperDomain[2])!=3){fprintf(stderr,"UpperDomain count not 3\n");goto err;}
-            upperflag=1;
+            if(sscanf(buf," %*s %lf %lf %lf",&UpperDomain[0], &UpperDomain[1], &UpperDomain[2])!=3){
+                fprintf(stderr,"UpperDomain count not 3\n");
+                errflag=true;
+                break;
+            }
+            upperflag=true;
         }
         else if(strcmp(token,"StartCuboid")==0){
-            if(readCuboid(fp,"EndCuboid")!=0)goto err;
+            if(readCuboid(fp,"EndCuboid")!=0){
+                errflag=true;
+                break;
+            }
         };
     }
-    if(pcldistflag==0)fprintf(stderr,"no ParticleDistance");
-    if(lowerflag==0)fprintf(stderr,"no LowerDomain");
-    if(upperflag==0)fprintf(stderr,"no UpperDomain");
-    return;
-    err:
-    fprintf(stderr,"error: \n\tfile:%s\n\tline:%s,token:%s\n",fname,buf,token);
-    return;
+    if(!pcldistflag)fprintf(stderr,"no ParticleDistance");
+    if(!lowerflag)fprintf(stderr,"no LowerDomain");
+    if(!upperflag)fprintf(stderr,"no UpperDomain");
+    if (errflag)fprintf(stderr,"error: \n\tfile:%s\n\tline:%s,token:%s\n",fname,buf,token);
+    fclose(fp);
 }
 
 int readCuboid(FILE *fp,const char *endcommand)
