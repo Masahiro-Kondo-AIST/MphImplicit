@@ -1877,12 +1877,9 @@ static void calculatePhysicalCoefficients()
 		const double k = PseudoplasticFlowConsistencyIndexK[ Property[iP] ];
 		const double n = PseudoplasticFlowBehaviorIndexN[ Property[iP] ];
 		const double m = PapanastasiouRegularizationIndexM[ Property[iP] ];
-		if( ShearRate[iP]!=0.0 ){
-			Mu[iP] = k * pow(ShearRate[iP],(n-1)) + (YieldStress[iP]/ShearRate[iP])*(1.0-exp(-m*ShearRate[iP]));
-		}
-		else{
-			Mu[iP] = YieldStress[iP]*m;
-		}
+		const double eps = 1.0e-15;
+		const double gamma = ShearRate[iP]+eps;
+		Mu[iP] = k * pow(gamma,(n-1)) + (YieldStress[iP]/gamma)*(1.0-exp(-m*gamma));
 	}
 	
 	
