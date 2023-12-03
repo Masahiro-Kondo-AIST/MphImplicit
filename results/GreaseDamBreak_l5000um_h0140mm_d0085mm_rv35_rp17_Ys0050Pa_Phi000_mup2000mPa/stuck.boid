@@ -1,0 +1,39 @@
+# Sample 
+ParticleDistance		0.005
+LowerDomain			-0.025  -0.025  -0.01
+UpperDomain			 0.600   0.200   0.01
+StartCuboid
+	Spacing			0.005
+	Type			1
+	Lower			 0.000   0.000  -0.0025
+	Upper			 0.085   0.140   0.0025 
+	Velocity        0.0  0.0  0.0
+EndCuboid
+StartCuboid
+	Spacing			0.005
+	Type			1
+	Lower			 0.085   0.000  -0.0025
+	Upper			 0.100   0.085   0.0025 
+	Velocity        0.0  0.0  0.0
+EndCuboid
+StartCuboid
+	Spacing			0.005
+	Type			2
+	Lower			-0.025  -0.025  -0.0025
+	Upper			 0.000   0.150   0.0025
+	Velocity        0.0 0.0 0.0
+EndCuboid
+StartCuboid
+	Spacing			0.005
+	Type			2
+	Lower			 0.000  -0.025  -0.0025
+	Upper			 0.600   0.000   0.0025
+	Velocity        0.0 0.0 0.0
+EndCuboid
+StartCuboid
+	Spacing			0.005
+	Type			2
+	Lower			0.085   0.085  -0.0025
+	Upper			0.110   0.150   0.0025
+	Velocity        0.0 0.0 0.0
+EndCuboid
