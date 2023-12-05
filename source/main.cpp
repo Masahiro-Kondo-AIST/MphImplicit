@@ -4787,7 +4787,7 @@ static void calculateVirialStressAtParticle()
 
 	}
 	
-	#pragma acc kernels present(x[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Mu[0:ParticleCount],NeighborInd[0:NeighborIndCount])
+	#pragma acc kernels present(Property[0:ParticleCount],x[0:ParticleCount][0:DIM],v[0:ParticleCount][0:DIM],Mu[0:ParticleCount],NeighborInd[0:NeighborIndCount])
 	#pragma acc loop independent	
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
