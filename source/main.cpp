@@ -27,11 +27,6 @@
 #include <assert.h>
 #include <omp.h>
 
-#ifdef _CUDA
-#include <cublas_v2.h>
-#include <cusparse_v2.h>
-#include <cuda_runtime_api.h>
-#endif
 
 #include "errorfunc.h"
 #include "log.h"
@@ -1808,14 +1803,14 @@ static void calculatePhysicalCoefficients()
 		const double phi = MohrCoulombFrictionAnglePhi[ iType ];
 		YieldStress[iP] = c + ((p>0.0) ? p:0.0) * tan(M_PI/180.0*phi);
 	}
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){ // shear rate
 		double strainrate[DIM][DIM] = {{0.0,0.0,0.0},{0.0,0.0,0.0},{0.0,0.0,0.0}};
 		#pragma acc loop seq
-		for(int jN=0;jN<NeighborCount[iP];++jN){  //NeighborCountPにおきかえ
-			const int jP=NeighborInd[ NeighborPtr[iP]+jN ]; //IndP, PtrPにおきかえ
+		for(int jN=0;jN<NeighborCountP[iP];++jN){  //NeighborCountPにおきかえ
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ]; //IndP, PtrPにおきかえ
 			if(iP==jP)continue;
             double xij[DIM];
 			#pragma acc loop seq
@@ -2059,14 +2054,14 @@ static void calculateDiffuseInterface()
 static void calculateDensityP()
 {
 	
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double sum = 0.0;
 		#pragma acc loop seq
-		for(int jN=0;jN<NeighborCount[iP];++jN){
-			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
+		for(int jN=0;jN<NeighborCountP[iP];++jN){
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP)continue;
 			double xij[DIM];
 			#pragma acc loop seq
@@ -2088,14 +2083,14 @@ static void calculateDensityP()
 static void calculateDivergenceP()
 {
 
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],NeighborInd[0:NeighborIndCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],Velocity[0:ParticleCount][0:DIM],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double sum = 0.0;
 		#pragma acc loop seq
-		for(int jN=0;jN<NeighborCount[iP];++jN){
-			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
+		for(int jN=0;jN<NeighborCountP[iP];++jN){
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP)continue;
             double xij[DIM];
 			#pragma acc loop seq
@@ -2136,14 +2131,14 @@ static void calculatePressureP()
 		}
 	}
 	
-	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],PressureP[0:ParticleCount],NeighborInd[0:NeighborIndCount])
+	#pragma acc kernels present(Property[0:ParticleCount],Position[0:ParticleCount][0:DIM],PressureP[0:ParticleCount],NeighborIndP[0:NeighborIndCountP])
 	#pragma acc loop independent
 	#pragma omp parallel for
 	for(int iP=0;iP<ParticleCount;++iP){
 		double force[DIM]={0.0,0.0,0.0};
 		#pragma acc loop seq
-		for(int jN=0;jN<NeighborCount[iP];++jN){
-			const int jP=NeighborInd[ NeighborPtr[iP]+jN ];
+		for(int jN=0;jN<NeighborCountP[iP];++jN){
+			const int jP=NeighborIndP[ NeighborPtrP[iP]+jN ];
 			if(iP==jP)continue;
             double xij[DIM];
 			#pragma acc loop seq
@@ -3782,419 +3777,6 @@ static void freeMultiGridMatrix( void ){
 }
 
 
-#ifdef _CUDA
-static void mycusparseDcsrmv(cusparseHandle_t cusparse, const int m, const int n, const long int nnz, const double alpha, double *csrVal, long int *csrRowPtr, int *csrColInd, double *x, const double beta, double *y )
-{
-	static int init_flag=0;
-	static size_t bufferSize=0;
-	static void * buffer;
-	
-	if(init_flag==0){
-		bufferSize=8;
-		cudaMalloc( &buffer, bufferSize );
-		init_flag=1;
-	}
-	
-	cusparseSpMatDescr_t mat;
-	cusparseCreateCsr( &mat, m, n, nnz, csrRowPtr, csrColInd, csrVal, CUSPARSE_INDEX_64I, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_BASE_ZERO, CUDA_R_64F);
-	cusparseDnVecDescr_t vecX;
-	cusparseCreateDnVec( &vecX, n, x, CUDA_R_64F );
-	cusparseDnVecDescr_t vecY;
-	cusparseCreateDnVec( &vecY, m, y, CUDA_R_64F );
-	
-	size_t requiredSize;
-	cusparseSpMV_bufferSize( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, &requiredSize);
-	if( requiredSize > bufferSize ){
-		cudaFree( buffer );
-		bufferSize = 2*requiredSize;
-		cudaMalloc( &buffer, bufferSize );
-	}
-	//cudaMalloc( &buffer, requiredSize );
-	cusparseSpMV( cusparse, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat, vecX, &beta, vecY, CUDA_R_64F, CUSPARSE_CSRMV_ALG1, buffer );
-	//cudaFree( buffer );
-	
-	cusparseDestroySpMat(mat);
-	cusparseDestroyDnVec(vecX);
-	cusparseDestroyDnVec(vecY);
-	
-}
-
-static void myDcsrmv( cusparseHandle_t cusparse, const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
-{
-	#pragma acc kernels deviceptr(csrVal,csrRowPtr,csrColInd,x,y)
-	//#pragma acc kernels present(csrVal[0:nnz],csrRowPtr[0:m+1],csrColInd[0:nnz],x[0:n],y[0:m])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iRow=0;iRow<m; ++iRow){
-		double sum = 0.0;
-		#pragma acc loop seq
-		for(int iNonZero=csrRowPtr[iRow];iNonZero<csrRowPtr[iRow+1];++iNonZero){
-			const int iColumn=csrColInd[iNonZero];
-			sum += alpha*csrVal[iNonZero]*x[iColumn];
-		}
-		y[iRow] *= beta;
-		y[iRow] += sum;
-	}
-}
-
-static void mycublasDdmv( cublasHandle_t cublas, const int n, const double alpha, const double *diag, const double *x, const double beta, double *y )
-{
-	// cublasDsbmv(cublas, CUBLAS_FILL_MODE_LOWER, n, 0, &alpha, diag, 1, x, 1, &beta, y, 1);
-	// This was not good performance when n is very large (> 307,200) (20221107 @ A100(80G) + HPC-SDK 21.5)
-	
-	#pragma acc kernels deviceptr(diag,x,y)
-	//#pragma acc kernels present(diag[0:n],x[0:n],y[0:n])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iRow=0;iRow<n;++iRow){
-		y[iRow] *= beta;
-		y[iRow] += alpha*diag[iRow]*x[iRow];
-	}
-}
-
-static void mycublasDscal( cublasHandle_t cublas, const int n, const double alpha, double *x )
-{
-	cublasDscal( cublas, n, &alpha, x, 1 );
-}
-
-static void mycublasDcopy( cublasHandle_t cublas, const int n, const double *x, double *y )
-{
-	cublasDcopy( cublas, n, x, 1, y, 1);
-}
-
-static void mydevDset( const int n, const double alpha, double *x )
-{
-	#pragma acc kernels deviceptr(x)
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iRow=0;iRow<n;++iRow){
-		x[iRow] = alpha;
-	}
-}
-
-
-static void preconditionWithMultiGrid(cublasHandle_t cublas, cusparseHandle_t cusparse, double *q, double *s, double *r ){
-	cTill = clock(); cImplicitSolve += (cTill-cFrom); cFrom = cTill;
-	
-	#ifdef TWO_DIMENSIONAL
-	const int dim=2;
-	#else
-	const int dim=3;
-	#endif
-	
-	#pragma acc host_data use_device(                         \
-		InvDiagA,                                             \
-		CsrCofP2G, CsrPtrP2G, CsrIndP2G,                      \
-		CsrCofG2P, CsrPtrG2P, CsrIndG2P,                      \
-		MultiGridCsrCofR, MultiGridCsrPtrR, MultiGridCsrIndR, \
-		MultiGridCsrCofP, MultiGridCsrPtrP, MultiGridCsrIndP, \
-		MultiGridCsrCofA, MultiGridCsrPtrA, MultiGridCsrIndA, \
-		MultiGridInvDiagA,                                    \
-		MultiGridVecQ, MultiGridVecS, MultiGridVecR           \
-	)
-	{
-		
-		
-		////////////---------- segregated precondition (1st term) M = D^(-1) ----------////////////
-		{// D^(-1)
-			const int N = DIM*(FluidParticleEnd-FluidParticleBegin);
-			cublasDcopy( cublas, N, q, 1, r, 1);
-			mycublasDdmv( cublas, N, 1.0, InvDiagA, r, 0.0, s);
-		}
-		
-		////////////---------- second term (multi-grid Jacobi) ----------////////////
-		{
-			const int iPower=0;
-			const int offset         =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeVec;
-			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-			const int offsetIndA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
-			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
-			const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
-			const int NC = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
-			
-			mycublasDcopy( cublas, NP, q, r);
-			myDcsrmv( cusparse, NC, NP, CsrNnzP2G, 1.0, CsrCofP2G, CsrPtrP2G, CsrIndP2G, r, 0.0, &MultiGridVecQ[offset] );
-			// mycusparseDcsrmv( cusparse, NC, NP, CsrNnzP2G, 1.0, CsrCofP2G, CsrPtrP2G, CsrIndP2G, r, 0.0, &MultiGridVecQ[offset] );
-			
-			mycublasDscal( cublas, NC, 0.0, &MultiGridVecS[offset] );
-			mycublasDcopy( cublas, NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
-			for(int iter=0;iter<2;++iter){
-				mycublasDdmv( cublas, NC, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offset], 1.0, &MultiGridVecS[offset] );
-				mycublasDcopy( cublas, NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
-				myDcsrmv( cusparse, NC, NC, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offset], 1.0, &MultiGridVecR[offset]);
-			}
-		}
-		
-		
-		for(int iPower=1;iPower<MultiGridDepth-1;++iPower){
-			
-			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
-			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
-			const int offsetPtrR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
-			const int offsetIndR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
-			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
-			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
-			const int *gridCountL    =MultiGridCount[iPower];
-			const int *gridCountS    =MultiGridCount[iPower-1];
-			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-			
-			myDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
-			// mycusparseDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
-			
-			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL]);
-			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<3;++iter){
-				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
-				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
-			}
-		}
-		
-		{
-			const int iPower=MultiGridDepth-1;
-			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
-			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
-			const int offsetPtrR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrR + (MultiGridDepth-iPower-1);
-			const int offsetIndR     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndR;
-			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
-			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
-			const int offsetPtrP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
-			const int offsetIndP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndP;
-			const int *gridCountL    =MultiGridCount[iPower];
-			const int *gridCountS    =MultiGridCount[iPower-1];
-			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-			
-			myDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
-			// mycusparseDcsrmv( cusparse, NL, NS, MultiGridCsrNnzR[iPower], 1.0, &MultiGridCsrCofR[offsetIndR], &MultiGridCsrPtrR[offsetPtrR], &MultiGridCsrIndR[offsetIndR], &MultiGridVecR[offsetS], 0.0, &MultiGridVecQ[offsetL] );
-			
-			mycublasDscal( cublas, NL, 0.0, &MultiGridVecS[offsetL] );
-			mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-			for(int iter=0;iter<4;++iter){
-				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
-				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-
-				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
-			}
-			mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
-			myDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
-			// mycusparseDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
-		}
-		
-		for(int iPower=MultiGridDepth-2;iPower>0;--iPower){
-			const int offsetS        =MultiGridOffset[MultiGridDepth-(iPower-1)-1]*OneGridSizeVec;
-			const int offsetL        =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeVec;
-			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-			const int offsetIndA     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndA;
-			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeInvDiagA;
-			const int offsetPtrP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrPtrP + (MultiGridDepth-iPower-1);
-			const int offsetIndP     =MultiGridOffset[MultiGridDepth-(iPower  )-1]*OneGridSizeCsrIndP;
-			const int *gridCountL    =MultiGridCount[iPower];
-			const int *gridCountS    =MultiGridCount[iPower-1];
-			const int NS = DIM*gridCountS[0]*gridCountS[1]*gridCountS[2];
-			const int NL = DIM*gridCountL[0]*gridCountL[1]*gridCountL[2];
-			
-			for(int iter=0;iter<3;++iter){
-				mycublasDcopy( cublas, NL, &MultiGridVecQ[offsetL], &MultiGridVecR[offsetL] );
-				myDcsrmv( cusparse, NL, NL, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offsetL], 1.0, &MultiGridVecR[offsetL]);
-				mycublasDdmv( cublas, NL, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offsetL], 1.0, &MultiGridVecS[offsetL]);
-			}
-			myDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
-			// mycusparseDcsrmv( cusparse, NS, NL, MultiGridCsrNnzP[iPower], 1.0, &MultiGridCsrCofP[offsetIndP], &MultiGridCsrPtrP[offsetPtrP], &MultiGridCsrIndP[offsetIndP], &MultiGridVecS[offsetL], 1.0, &MultiGridVecS[offsetS] );
-		}
-		
-		{
-			const int iPower=0;
-			const int offset         =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeVec;
-			const int offsetPtrA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrPtrA + (MultiGridDepth-iPower-1);
-			const int offsetIndA     =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeCsrIndA;
-			const int offsetInvDiagA =MultiGridOffset[MultiGridDepth-iPower-1]*OneGridSizeInvDiagA;
-			const int NP = DIM*(FluidParticleEnd-FluidParticleBegin);
-			const int NC = DIM*MultiGridCount[0][0]*MultiGridCount[0][1]*MultiGridCount[0][2];
-			
-			for(int iter=0;iter<2;++iter){
-				mycublasDcopy( cublas, NC, &MultiGridVecQ[offset], &MultiGridVecR[offset] );
-				myDcsrmv( cusparse, NC, NC, MultiGridCsrNnzA[iPower], -1.0, &MultiGridCsrCofA[offsetIndA], &MultiGridCsrPtrA[offsetPtrA], &MultiGridCsrIndA[offsetIndA], &MultiGridVecS[offset], 1.0, &MultiGridVecR[offset]);
-				mycublasDdmv( cublas, NC, 1.0, &MultiGridInvDiagA[offsetInvDiagA], &MultiGridVecR[offset], 1.0, &MultiGridVecS[offset]);
-			}
-			myDcsrmv( cusparse, NP, NC, CsrNnzG2P, 1.0, CsrCofG2P, CsrPtrG2P, CsrIndG2P, &MultiGridVecS[offset], 1.0, s );
-			// mycusparseDcsrmv( cusparse, NP, NC, CsrNnzG2P, 1.0, CsrCofG2P, CsrPtrG2P, CsrIndG2P, &MultiGridVecS[offset], 1.0, s );
-		}
-	}
-	
-	cTill = clock(); cPrecondition += (cTill-cFrom); cFrom = cTill;
-}
-
-static void solveWithConjugatedGradient(void){
-	
-	const int fluidcount=FluidParticleEnd-FluidParticleBegin;
-	const int N = DIM*fluidcount;
-	
-	double *b = VectorB;
-	double *x = (double *)malloc( N*sizeof(double) );
-	double *r = (double *)malloc( N*sizeof(double) );
-	double *s = (double *)malloc( N*sizeof(double) );
-	double *y = (double *)malloc( N*sizeof(double) );
-	double *p = (double *)malloc( N*sizeof(double) );
-	double *q = (double *)malloc( N*sizeof(double) );
-	double *u = (double *)malloc( N*sizeof(double) );
-	double *buf = (double *)malloc( N*sizeof(double) );
-	double rho=0.0;
-	double rhop=0.0;
-	double tmp=0.0;
-	double alpha=0.0;
-	double beta=0.0;
-	double rr=0.0;
-	double rr0=0.0;
-	double rs=0.0;
-	double rs0=0.0;
-	int iter=0;
-	
-	const double one=1.0;
-	const double minus_one=-1.0;
-	const double zero=0.0;	
-	
-	#pragma acc enter data create(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
-	
-	// cuda init
-	cublasHandle_t cublas;
-	cublasCreate(&cublas);
-	
-	cusparseHandle_t cusparse;
-	cusparseCreate(&cusparse);
-	
-	
-	// set intial solution
-	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],Force[0:ParticleCount][0:DIM],Mass[0:ParticleCount],x[0:N])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iP=0;iP<fluidcount;++iP){
-		#pragma acc loop seq
-		for(int rD=0;rD<DIM;++rD){
-			const int iRow = DIM*iP+rD;
-			x[iRow]=Velocity[iP][rD]-Force[iP][rD]/Mass[iP]*Dt;
-		}
-	}
-	
-	#pragma acc host_data use_device(b,CsrCofA,CsrPtrA,CsrIndA,x,r,s,y,p,q,u,buf)
-	{
-		// intialize
-		mydevDset( N, -1.0*__LINE__, r );
-		mydevDset( N, -1.0*__LINE__, s );
-		mydevDset( N, -1.0*__LINE__, y );
-		mydevDset( N, -1.0*__LINE__, p );
-		mydevDset( N, -1.0*__LINE__, q );
-		mydevDset( N, -1.0*__LINE__, u );
-		mydevDset( N, -1.0*__LINE__, buf );
-		
-		#pragma acc host_data use_device(MultiGridVecS,MultiGridVecR,MultiGridVecQ)
-		{
-			mydevDset( AllGridSizeVecS, -1.0*__LINE__, MultiGridVecS );
-			mydevDset( AllGridSizeVecR, -1.0*__LINE__, MultiGridVecR );
-			mydevDset( AllGridSizeVecQ, -1.0*__LINE__, MultiGridVecQ );
-		}
-		
-		#ifdef MULTIGRID_SOLVER
-		preconditionWithMultiGrid(cublas,cusparse, b, s, buf );
-		#else
-		cublasDcopy(cublas,N,b,1,s,1);
-		#endif
-		cublasDdot(cublas,N,b,1,s,1,&rs0);
-		cublasDdot(cublas,N,b,1,b,1,&rr0);
-		
-		cublasDcopy(cublas,N,b,1,r,1);
-		mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
-		#ifdef MULTIGRID_SOLVER
-		preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
-		#else
-		cublasDcopy(cublas,N,r,1,s,1);
-		#endif
-		
-		for(iter=0;iter<N;++iter){
-			cublasDdot(cublas,N,r,1,r,1,&rr);
-			if(rr/rr0 <1.0e-12)break;
-			{
-				#ifdef CONVERGENCE_CHECK
-				cublasDdot(cublas,N,r,1,s,1,&rs);
-				log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
-				#endif
-			}
-			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,s,0.0,y);
-			cublasDdot(cublas,N,s,1,y,1,&rho);
-			if(iter==0){
-				cublasDcopy(cublas,N,s,1,p,1);
-				mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,1.0,CsrCofA,CsrPtrA,CsrIndA,p,0.0,q);
-			}
-			else{
-				beta=rho/rhop;
-				cublasDscal(cublas,N,&beta,p,1);
-				cublasDaxpy(cublas,N,&one,s,1,p,1);
-				cublasDscal(cublas,N,&beta,q,1);
-				cublasDaxpy(cublas,N,&one,y,1,q,1);
-			}
-			#ifdef MULTIGRID_SOLVER
-			preconditionWithMultiGrid(cublas,cusparse, q, u, buf ); 
-			#else
-			cublasDcopy(cublas,N,q,1,u,1);
-			#endif
-			cublasDdot(cublas,N,q,1,u,1,&tmp);
-			alpha =rho/tmp;
-			cublasDaxpy(cublas,N,&alpha,p,1,x,1);
-			alpha*=-1;
-			cublasDaxpy(cublas,N,&alpha,q,1,r,1);
-			cublasDaxpy(cublas,N,&alpha,u,1,s,1);
-			rhop=rho;
-		}
-		cublasDdot(cublas,N,r,1,r,1,&rr);
-		cublasDdot(cublas,N,r,1,s,1,&rs);
-		log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
-		
-		{
-			#ifdef CONVERGENCE_CHECK
-			cublasDcopy(cublas,N,b,1,r,1);
-			mycusparseDcsrmv(cusparse,N,N,NonzeroCountA,-1.0,CsrCofA,CsrPtrA,CsrIndA,x,1.0,r);
-			#ifdef MULTIGRID_SOLVER
-			preconditionWithMultiGrid(cublas,cusparse, r, s, buf );
-			#else
-			cublasDcopy(cublas,N,r,1,s,1);
-			#endif
-			cublasDdot(cublas,N,r,1,r,1,&rr);
-			cublasDdot(cublas,N,r,1,s,1,&rs);
-			log_printf("line:%d, iter,=%d, rr0=,%e, rr=,%e, rs0=,%e, rs=,%e\n",__LINE__,iter,rr0,rr,rs0,rs);
-			#endif
-		}
-
-	}
-
-	
-	//copy to Velocity
-	#pragma acc kernels present(Velocity[0:ParticleCount][0:DIM],x[0:N])
-	#pragma acc loop independent
-	#pragma omp parallel for
-	for(int iP=0;iP<fluidcount;++iP){
-		#pragma acc loop seq
-		for(int rD=0;rD<DIM;++rD){
-			const int iRow = DIM*iP+rD;
-			Velocity[iP][rD]=x[iRow];
-		}
-	}	
-	
-	free(x);
-	free(r);
-	free(s);
-	free(y);
-	free(p);
-	free(q);
-	free(u);
-	free(buf);
-	#pragma acc exit data delete(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
-}
-
-
-#else //_CUDA is not defined,
 static void myDcsrmv( const int m, const int n, const int nnz, const double alpha, const double *csrVal, const int *csrRowPtr, const int *csrColInd, const double *x, const double beta, double *y)
 {
 	#pragma acc kernels deviceptr(csrVal,csrRowPtr,csrColInd,x,y)
@@ -4602,10 +4184,6 @@ static void solveWithConjugatedGradient(void){
 	#pragma acc exit data delete(x[0:N],r[0:N],s[0:N],y[0:N],p[0:N],q[0:N],u[0:N],buf[0:N])
 
 }
-
-#endif
-
-
 
 
 static void calculateVirialPressureAtParticle()
