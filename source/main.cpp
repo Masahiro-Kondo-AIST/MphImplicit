@@ -13,6 +13,7 @@
 //     [4] CMAME 385 (2021) 114072,  https://doi.org/10.1016/j.cma.2021.114072                    //
 //     [5] JSCES Paper No.20210016,  https://doi.org/10.11421/jsces.2021.20210016                 //
 //     [6] CPM (2023),               https://doi.org/10.1007/s40571-023-00636-4                   //
+//     [7] JFST 18 (2023) JFST0035,  https://doi.org/10.1299/jfst.2023jfst0035                    //
 //    (Please cite the references above when you make a publication using this program)           //
 //    Copyright (c) 2022                                                                          //
 //    Masahiro Kondo & National Institute of Advanced Industrial Science and Technology (AIST)    //
