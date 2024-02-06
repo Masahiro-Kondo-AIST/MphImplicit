@@ -2,7 +2,6 @@
 Dt				1.0e-4
 OutputInterval			1.0
 VtkOutputInterval		1.0e-1
-TypeOutput				1	1	1	1
 EndTime			2.0
 RadiusRatioA                    3.5
 RadiusRatioP                    1.75
@@ -10,12 +9,17 @@ RadiusRatioV                    3.5
 Density							870.0		870.0		870.0		870.0		870.0		870.0
 BulkModulus						1.0e+8		1.0e+8		1.0e+8		1.0e+8		1.0e+8		1.0e+8
 BulkViscosity					5.0e+5		5.0e+5		5.0e+5		5.0e+5		5.0e+5		5.0e+5
+BulkViscosityInExpansion		5.0e+5		5.0e+5		0.0e+5		0.0e+5		0.0e+5		0.0e+5
 PseudoplasticFlowBehaviorIndexN			1.0			1.0			1.0			1.0			1.0			1.0
 PseudoplasticFlowConsistencyIndexK		2.0e+0		2.0e+0		2.0e+0		2.0e+0		2.0e+0		2.0e+5
 PapanastasiouRegularizationIndexM		100.0		100.0		100.0		100.0		100.0		100.0
 MohrCoulombInterceptC					50.0		50.0		50.0		50.0		50.0		50.0
 MohrCoulombFrictionAnglePhi				0.0			0.0			0.0			0.0			0.0			0.0
-SolidFaceViscosityPerSlipLayer			1.0e+10		1.0e+10		1.0e+10		1.0e+10		1.0e+10		1,0e-1
+SolidFacePseudoplasticFlowBehaviorIndexN		1.0
+SolidFacePseudoplasticFlowConsistencyIndexK		2.0e+5
+SolidFacePapanastasiouRegularizationIndexM		100.0
+SolidFaceMohrCoulombInterceptC					50.0
+SolidFaceMohrCoulombFrictionAnglePhi			0.0
 SurfaceTension					0.000		0.000		0.000		0.000		0.000		0.000
 InteractionRatio(Fluid0)			1.0			1.0			1.0			1.0			1.0			1.0
 InteractionRatio(Fluid1)			1.0			1.0			1.0			1.0			1.0			1.0

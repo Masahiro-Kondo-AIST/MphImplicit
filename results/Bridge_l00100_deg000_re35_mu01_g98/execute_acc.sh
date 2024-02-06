@@ -9,7 +9,7 @@ do
     export CUDA_VISIBLE_DEVICES=${col1}
     echo "CUDA_VISIBLE_DEVICES:$CUDA_VISIBLE_DEVICES"
 
-        ../../source/Mph_acc stuck.data stuck.grid stuck%03d.prof stuck%03d.vtk stuck.log 1
+        ../../source/Mph_acc box.data box.grid box%03d.prof box%03d.vtk box.log 1
 
     break
   fi

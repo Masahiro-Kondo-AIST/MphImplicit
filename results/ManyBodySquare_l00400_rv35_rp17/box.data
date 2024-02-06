@@ -9,12 +9,17 @@ RadiusRatioV					3.5
 Density							1.0e+3		1.0e+3		1.0e+3		1.0e+3		1.0e+3		1.0e+3
 BulkModulus						1.0e+6		1.0e+6		1.0e+6		1.0e+6		1.0e+6		1.0e+6
 BulkViscosity					1.0e+6		1.0e+6		1.0e+6		1.0e+6		1.0e+6		1.0e+6
+BulkViscosityInExpansion		1.0e+6		1.0e+6		0.0e+6		0.0e+6		0.0e+6		0.0e+6
 PseudoplasticFlowBehaviorIndexN			1.0			1.0			1.0			1.0			1.0			1.0
 PseudoplasticFlowConsistencyIndexK		1.0e+0		1.0e+0		1.0e+0		1.0e+0		1.0e+0		1.0e+5
 PapanastasiouRegularizationIndexM		0.0			0.0			0.0			0.0			0.0			0.0
 MohrCoulombInterceptC					0.0			0.0			0.0			0.0			0.0			0.0
 MohrCoulombFrictionAnglePhi				0.0			0.0			0.0			0.0			0.0			0.0
-SolidFaceViscosityPerSlipLayer			1.0e+10		1.0e+10		1.0e+10		1.0e+10		1.0e+10		1,0e-1
+SolidFacePseudoplasticFlowBehaviorIndexN		1.0
+SolidFacePseudoplasticFlowConsistencyIndexK		1.0e+0
+SolidFacePapanastasiouRegularizationIndexM		0.0
+SolidFaceMohrCoulombInterceptC					0.0
+SolidFaceMohrCoulombFrictionAnglePhi			0.0
 SurfaceTension					0.000		0.000		0.000		0.000		0.000		0.000
 InteractionRatio(Fluid0)			1.0			1.0			1.0			1.0			1.0			1.0
 InteractionRatio(Fluid1)			1.0			1.0			1.0			1.0			1.0			1.0
