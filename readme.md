@@ -30,10 +30,10 @@ using MPH-I (Moving Particle Hydrodynamics for Incompressible) method.
 The directories in the repository is as follows:  
 
 ```
-MphImplicit ---- generator
-            |--- results
-            |--- results3d
-            |--- source
+MphImplicit 
+     |--- generator
+     |--- results
+     |--- source
 
 ```        
 
@@ -100,36 +100,10 @@ For 3D OpenACC calculation with NVIDIA HPC-SDK;
 ```
 > make Mph_acc3d
 ``` 
-For 2D OpenACC calculation using CUDA libraries (cublas & cusparse) with NVIDIA HPC-SDK; 
-```
-> make Mph_cuda
-``` 
-For 3D OpenACC calculation using CUDA libraries (cublas & cusparse) with NVIDIA HPC-SDK;
-```
-> make Mph_cuda3d
-``` 
 See "makefile" in detail. 
 
 Instead of switching the target executable as above, 
 You may switch the compiler and its options directly. 
-
-For using openMP apply
-```
- CC = g++
- CFLAGS  = -O3 -fopenmp 
-```
-For using openACC apply
-```
- CC = pgc++
- CFLAGS  =  -O3 -acc -Minfo=accel  
-```
-
-For using CUDA libraries (cublas & cusparse) apply
-```
- CC = pgc++
- CFLAGS  =  -O3 -acc -Minfo=accel -ta=tesla,cc70 -Mcuda
- LDFLAGS =  -lm -lcublas -lcusparse
-```
  
 The solver program has only been tested with 
    g++ 7.5.0.   and   NVIDIA HPC-SDK 21.5 with CUDA version 11.3.
@@ -147,7 +121,9 @@ In the main solver, the particle types are defined as
 - 1: fluid
 - 2: wall
 - 3: wall
-Therefore, 2 fluid types and 2 wall types can be used in the solver. 
+- 4: wall
+- 5 and over: many body
+Therefore, 2 fluid types, 3 wall types and 1 many body solid can be used in the solver. 
 To change tne number of types, the main solver is to be modified. 
 
 # Changing physical properties 
@@ -159,14 +135,12 @@ properties can be changed.
 # For 3D calculation 
 Particle distribution in 3D can be generated only by editing the 
 cuboid file (*.boid) No modification in the generator program is needed. 
-In compiling the main solver, 3D executable is generated 
-when the macro TWO_DIMENSIONAL is NOT defined, 
-which can be controled by the compile option.   
+With solvers compiled for 3D, 3D calculation can be conducted. 
   
 
 # For Truning off Multigrid solver
 When you do not want to apply the multigrid preconditioner, 
-just comment out the macro MULTIGRID_SOLVER in the main solver. 
+just comment out the macro MULTIGRID_SOLVER in "main.cpp".  
 Then, the simple CR solver is applied in the calculation.  
 
 
